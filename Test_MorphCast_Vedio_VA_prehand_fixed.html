@@ -203,6 +203,40 @@
     </div>
   </div>
   
+  <!-- 生理信号数据导入区域 -->
+  <div class="row" style="margin-top: 10px; padding: 15px; border: 1px solid #444; border-radius: 5px;">
+    <h3 style="color: #ccc; margin: 0 0 10px 0;">📊 生理信号数据导入</h3>
+    
+    <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+      <!-- 文件导入 -->
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <label style="color: #ccc; font-size: 12px;">导入生理信号数据</label>
+        <input type="file" id="physioFileInput" accept=".csv,.xdf,.json" style="color: #ccc; background: #333; border: 1px solid #555; padding: 5px; border-radius: 3px;">
+      </div>
+      
+      <!-- 采样配置 -->
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <label style="color: #ccc; font-size: 12px;">数据采样</label>
+        <div style="display: flex; gap: 5px; align-items: center;">
+          <label style="color: #aaa; font-size: 11px;">最大点数:</label>
+          <input type="number" id="maxDataPoints" value="20000" min="100" max="50000" step="100" style="width: 80px; padding: 2px 4px; background: #333; color: #fff; border: 1px solid #555; border-radius: 3px; font-size: 11px;">
+        </div>
+      </div>
+      
+      <!-- 数据状态 -->
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <label style="color: #ccc; font-size: 12px;">数据状态</label>
+        <span id="physiologicalStatus" style="color: #888; font-size: 12px;">未导入数据</span>
+      </div>
+      
+      <!-- 转换导出 -->
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <label style="color: #ccc; font-size: 12px;">数据处理</label>
+        <button id="convertToXdfBtn" disabled style="padding: 6px 12px; font-size: 12px; background: #4caf50; border: none; border-radius: 4px; color: white; cursor: pointer;">转换并导出XDF</button>
+      </div>
+    </div>
+  </div>
+  
   <!-- 7类情绪显示区域 -->
   <div id="emotionChartContainer" style="margin-top: 20px;">
     <h3 style="color: #fff; margin-bottom: 10px;">🎭 7类情绪概率分布</h3>
@@ -255,6 +289,13 @@
     let currentAPI = 'morphcast'; // 当前使用的API: 'morphcast' 或 'deepface'
     let deepfaceApiUrl = 'http://localhost:5000'; // DeepFace API 地址
     let apiConnected = false; // API 连接状态
+
+    // 生理信号数据存储
+    let physiologicalData = {
+      gsr: [],
+      ppg: [],
+      startTime: null
+    };
 
     // 初始化情绪图表
     function initEmotionChart() {
@@ -323,6 +364,473 @@
     // 暴露全局变量供va-chart.js访问
     window.emotionChart = emotionChart;
     window.emotionDetectionEnabled = emotionDetectionEnabled;
+
+    // CSV解析函数 - 直接转换为XDF格式
+    function parseShimmerCSVToXDF(csvText) {
+      const lines = csvText.trim().split('\n');
+      
+      // 处理可能的分隔符声明行
+      let headerLineIndex = 0;
+      let separator = '\t'; // 默认制表符分隔
+      
+      // 检查第一行是否是分隔符声明
+      if (lines[0].includes('sep=')) {
+        console.log('检测到分隔符声明:', lines[0]);
+        // 提取分隔符
+        const sepMatch = lines[0].match(/sep=(.)/);
+        if (sepMatch) {
+          separator = sepMatch[1];
+          console.log('使用分隔符:', separator);
+        }
+        headerLineIndex = 1; // 跳过分隔符声明行
+      }
+      
+      if (headerLineIndex >= lines.length) {
+        throw new Error('CSV文件格式错误：没有找到标题行');
+      }
+      
+      const headers = lines[headerLineIndex].split(separator)
+        .map(h => h.trim().replace(/\r/g, ''))
+        .filter(h => h.length > 0); // 过滤掉空的表头
+      console.log('清理后的CSV Headers:', headers); // 调试信息
+      
+      // 查找相关列的索引
+      const timeIndex = headers.findIndex(h => 
+        h.includes('Timestamp') || 
+        h.includes('timestamp') || 
+        h.includes('TIME') || 
+        h.includes('Time')
+      );
+      
+      const gsrIndex = headers.findIndex(h => 
+        h.includes('GSR_Skin_Conductance') || 
+        (h.includes('GSR') && h.includes('Conductance'))
+      );
+      
+      const ppgIndex = headers.findIndex(h => 
+        h.includes('PPG') && h.includes('CAL')
+      );
+      
+      console.log('Column indices - Time:', timeIndex, 'GSR:', gsrIndex, 'PPG:', ppgIndex);
+      console.log('Time column name:', timeIndex >= 0 ? headers[timeIndex] : 'NOT FOUND');
+      console.log('GSR column name:', gsrIndex >= 0 ? headers[gsrIndex] : 'NOT FOUND');
+      console.log('PPG column name:', ppgIndex >= 0 ? headers[ppgIndex] : 'NOT FOUND');
+      
+      const gsrTimeSeries = [];
+      const gsrTimeStamps = [];
+      const ppgTimeSeries = [];
+      const ppgTimeStamps = [];
+      let startTime = null;
+      
+      // 从标题行后的下一行开始（跳过单位行）
+      const dataStartIndex = headerLineIndex + 2;
+      let processedLines = 0;
+      let validTimeCount = 0;
+      let validGSRCount = 0;
+      let validPPGCount = 0;
+      
+      console.log('开始数据解析:');
+      console.log('- headerLineIndex:', headerLineIndex);
+      console.log('- dataStartIndex:', dataStartIndex);
+      console.log('- 总行数:', lines.length);
+      console.log('- 预期处理行数:', lines.length - dataStartIndex);
+      console.log('- headers.length:', headers.length);
+      
+      // 数据采样设置 - 从UI获取配置
+      const maxDataPointsInput = document.getElementById('maxDataPoints');
+      const maxDataPoints = maxDataPointsInput ? parseInt(maxDataPointsInput.value) || 20000 : 20000;
+      const totalDataLines = lines.length - dataStartIndex;
+      let samplingRate = 1; // 默认不采样
+      
+      if (totalDataLines > maxDataPoints) {
+        samplingRate = Math.ceil(totalDataLines / maxDataPoints);
+        console.log(`数据量较大(${totalDataLines}行)，将按${samplingRate}:1比率采样，预计处理约${Math.ceil(totalDataLines / samplingRate)}行`);
+      } else {
+        console.log(`数据量适中(${totalDataLines}行)，将处理全部数据`);
+      }
+      
+      let samplingCounter = 0;
+      
+      for (let i = dataStartIndex; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) {
+          console.log(`跳过空行 ${i+1}`);
+          continue; // 跳过空行
+        }
+        
+        // 数据采样：只处理符合采样率的行
+        if (samplingCounter % samplingRate !== 0) {
+          samplingCounter++;
+          continue;
+        }
+        samplingCounter++;
+        
+        const values = line.split(separator)
+          .map(v => v.trim().replace(/\r/g, ''))
+          .filter(v => v.length > 0); // 过滤掉空的值
+        
+        // 详细调试前几行
+        if (processedLines < 3) {
+          console.log(`调试第${i+1}行(采样后第${processedLines+1}行):`);
+          console.log('- 原始行:', line);
+          console.log('- 原始分割数量:', line.split(separator).length);
+          console.log('- 过滤后values.length:', values.length);
+          console.log('- headers.length:', headers.length);
+          console.log('- values:', values);
+        }
+        
+        if (values.length < headers.length) {
+          if (processedLines < 3) {
+            console.log(`第${i+1}行列数不匹配，跳过`);
+          }
+          continue;
+        }
+        
+        processedLines++;
+        
+        // 调试前几行数据
+        if (processedLines <= 3) {
+          console.log(`处理第${processedLines}行数据:`, values);
+          console.log(`时间戳值: "${values[timeIndex >= 0 ? timeIndex : 0]}"`);
+          if (gsrIndex >= 0) console.log(`GSR值: "${values[gsrIndex]}"`);
+          if (ppgIndex >= 0) console.log(`PPG值: "${values[ppgIndex]}"`);
+        }
+        
+        // 解析时间戳 - 支持完整日期时间格式
+        const timeStr = values[timeIndex >= 0 ? timeIndex : 0];
+        let totalSeconds;
+        
+        if (timeStr.includes('/') && timeStr.includes(':')) {
+          // 完整日期时间格式: 2025/09/08 19:37:30.318
+          try {
+            const dateObj = new Date(timeStr);
+            if (!isNaN(dateObj.getTime())) {
+              totalSeconds = dateObj.getTime() / 1000; // 转换为Unix时间戳(秒)
+            } else {
+              throw new Error('Invalid date');
+            }
+          } catch (e) {
+            if (processedLines <= 3) {
+              console.log(`日期解析失败: "${timeStr}" -> ${e.message}`);
+            }
+            continue;
+          }
+        } else if (timeStr.includes(':')) {
+          // 简单时间格式: 37:30.3 或 00:37:30.3
+          const timeParts = timeStr.split(':');
+          if (timeParts.length === 2) {
+            // MM:SS.mmm 格式
+            totalSeconds = parseInt(timeParts[0]) * 60 + parseFloat(timeParts[1]);
+          } else if (timeParts.length === 3) {
+            // HH:MM:SS.mmm 格式
+            totalSeconds = parseInt(timeParts[0]) * 3600 + parseInt(timeParts[1]) * 60 + parseFloat(timeParts[2]);
+          } else {
+            totalSeconds = parseFloat(timeStr);
+          }
+        } else {
+          // 纯数字格式
+          totalSeconds = parseFloat(timeStr);
+        }
+        
+        if (isNaN(totalSeconds)) {
+          if (processedLines <= 3) {
+            console.log(`时间解析失败: "${timeStr}" -> NaN`);
+          }
+          continue; // 跳过无效时间
+        }
+        
+        validTimeCount++;
+        
+        if (startTime === null) {
+          startTime = totalSeconds;
+          console.log('开始时间(Unix时间戳):', startTime, '日期:', new Date(startTime * 1000).toISOString());
+        }
+        
+        // 相对时间（从0开始）
+        const relativeTime = totalSeconds - startTime;
+        
+        // 调试前几行的时间转换
+        if (processedLines <= 3) {
+          console.log(`第${processedLines}行时间转换:`, {
+            原始时间: timeStr,
+            绝对时间戳: totalSeconds,
+            相对时间: relativeTime
+          });
+        }
+        
+        // 解析GSR数据
+        if (gsrIndex !== -1 && values[gsrIndex]) {
+          const gsrValue = parseFloat(values[gsrIndex]);
+          if (!isNaN(gsrValue)) {
+            gsrTimeSeries.push([gsrValue]);
+            gsrTimeStamps.push(relativeTime);
+            validGSRCount++;
+          } else if (processedLines <= 3) {
+            console.log(`GSR解析失败: "${values[gsrIndex]}" -> NaN`);
+          }
+        }
+        
+        // 解析PPG数据
+        if (ppgIndex !== -1 && values[ppgIndex]) {
+          const ppgValue = parseFloat(values[ppgIndex]);
+          if (!isNaN(ppgValue)) {
+            ppgTimeSeries.push([ppgValue]);
+            ppgTimeStamps.push(relativeTime);
+            validPPGCount++;
+          } else if (processedLines <= 3) {
+            console.log(`PPG解析失败: "${values[ppgIndex]}" -> NaN`);
+          }
+        }
+      }
+      
+      // 创建符合LSL标准的XDF格式数据
+      const xdfData = {
+        "info": {
+          "version": "1.0",
+          "created": new Date().toISOString(),
+          "software": "EmotionAnalysisApp_GSR_Extension",
+          "session_id": `physio_session_${Date.now()}`
+        },
+        "streams": []
+      };
+
+      // 添加GSR流 - 符合LSL标准
+      if (gsrTimeSeries.length > 0) {
+        xdfData.streams.push({
+          "info": {
+            "name": "Shimmer_GSR",
+            "type": "Physiological",
+            "channel_count": 1,
+            "nominal_srate": gsrTimeSeries.length > 1 ? Math.round(1 / (gsrTimeStamps[1] - gsrTimeStamps[0])) : 50,
+            "channel_format": "float32",
+            "source_id": "Shimmer_A923",
+            "channels": [
+              {
+                "label": "GSR_Conductance",
+                "unit": "microsiemens",
+                "type": "GSR",
+                "description": "Galvanic Skin Response - Skin Conductance"
+              }
+            ],
+            "manufacturer": "Shimmer",
+            "caps": ["GSR"],
+            "desc": {
+              "device": {
+                "name": "Shimmer GSR+ Unit",
+                "type": "wearable_sensor",
+                "serial": "A923"
+              }
+            }
+          },
+          "time_series": gsrTimeSeries,
+          "time_stamps": gsrTimeStamps
+        });
+      }
+
+      // 添加PPG流 - 符合LSL标准
+      if (ppgTimeSeries.length > 0) {
+        xdfData.streams.push({
+          "info": {
+            "name": "Shimmer_PPG",
+            "type": "Physiological",
+            "channel_count": 1,
+            "nominal_srate": ppgTimeSeries.length > 1 ? Math.round(1 / (ppgTimeStamps[1] - ppgTimeStamps[0])) : 50,
+            "channel_format": "float32",
+            "source_id": "Shimmer_A923",
+            "channels": [
+              {
+                "label": "PPG_A13",
+                "unit": "millivolts",
+                "type": "PPG",
+                "description": "Photoplethysmography - Heart Rate Signal"
+              }
+            ],
+            "manufacturer": "Shimmer",
+            "caps": ["PPG"],
+            "desc": {
+              "device": {
+                "name": "Shimmer GSR+ Unit",
+                "type": "wearable_sensor",
+                "serial": "A923"
+              }
+            }
+          },
+          "time_series": ppgTimeSeries,
+          "time_stamps": ppgTimeStamps
+        });
+      }
+      
+      console.log(`CSV转XDF成功: GSR ${gsrTimeSeries.length}点, PPG ${ppgTimeSeries.length}点`);
+      console.log('详细统计:');
+      console.log('- 总数据行数:', lines.length - dataStartIndex);
+      console.log('- 采样率:', samplingRate + ':1');
+      console.log('- 处理的行数:', processedLines);
+      console.log('- 有效时间戳:', validTimeCount);
+      console.log('- 有效GSR数据:', validGSRCount);
+      console.log('- 有效PPG数据:', validPPGCount);
+      if (samplingRate > 1) {
+        console.log('- 数据压缩率:', `${((processedLines / (lines.length - dataStartIndex)) * 100).toFixed(1)}%`);
+      }
+      
+      if (gsrTimeSeries.length === 0 && ppgTimeSeries.length === 0) {
+        console.warn('警告：没有解析到任何数据，请检查：');
+        console.warn('1. 数据是否从第', dataStartIndex + 1, '行开始');
+        console.warn('2. 时间戳格式是否为 MM:SS.mmm');
+        console.warn('3. GSR/PPG数据是否为有效数字');
+        
+        // 显示前几行原始数据用于调试
+        console.warn('前3行原始数据:');
+        for (let i = dataStartIndex; i < Math.min(dataStartIndex + 3, lines.length); i++) {
+          console.warn(`第${i+1}行:`, lines[i]);
+        }
+      }
+      
+      return xdfData;
+    }
+
+    // XDF解析函数
+    function parseXDFData(xdfData) {
+      try {
+        const data = typeof xdfData === 'string' ? JSON.parse(xdfData) : xdfData;
+        
+        const gsrData = [];
+        const ppgData = [];
+        
+        if (data.streams) {
+          for (const stream of data.streams) {
+            if (stream.info.name === 'Shimmer_GSR' && stream.time_series) {
+              // 使用time_stamps字段或计算时间
+              const timeStamps = stream.time_stamps;
+              const sampleRate = stream.info.nominal_srate || 50;
+              
+              stream.time_series.forEach((sample, index) => {
+                const time = timeStamps ? timeStamps[index] : (index / sampleRate);
+                const value = Array.isArray(sample) ? sample[0] : sample;
+                if (Number.isFinite(value)) {
+                  gsrData.push({ time, gsr: value });
+                }
+              });
+            }
+            
+            if (stream.info.name === 'Shimmer_PPG' && stream.time_series) {
+              const timeStamps = stream.time_stamps;
+              const sampleRate = stream.info.nominal_srate || 50;
+              
+              stream.time_series.forEach((sample, index) => {
+                const time = timeStamps ? timeStamps[index] : (index / sampleRate);
+                const value = Array.isArray(sample) ? sample[0] : sample;
+                if (Number.isFinite(value)) {
+                  ppgData.push({ time, ppg: value });
+                }
+              });
+            }
+          }
+        }
+        
+        console.log(`XDF解析结果: GSR ${gsrData.length}点, PPG ${ppgData.length}点`);
+        return { gsr: gsrData, ppg: ppgData };
+      } catch (error) {
+        throw new Error('XDF数据解析失败: ' + error.message);
+      }
+    }
+
+    // 将生理信号数据转换为XDF格式
+    function convertPhysiologicalToXDF(gsrData, ppgData) {
+      const xdfData = {
+        "info": {
+          "version": "1.0",
+          "created": new Date().toISOString(),
+          "software": "EmotionAnalysisApp_GSR_Extension",
+          "source": "Shimmer_Sensor",
+          "description": "GSR and PPG data from Shimmer wearable sensor"
+        },
+        "streams": []
+      };
+
+      // GSR数据流
+      if (gsrData.length > 0) {
+        const gsrStream = {
+          "info": {
+            "name": "Shimmer_GSR",
+            "type": "Physiological",
+            "channel_count": 1,
+            "nominal_srate": 50, // 假设50Hz采样率
+            "channel_format": "float32",
+            "source_id": "Shimmer_A923",
+            "channels": [
+              {
+                "label": "GSR_Conductance",
+                "unit": "microsiemens",
+                "type": "GSR",
+                "description": "Galvanic Skin Response - Skin Conductance"
+              }
+            ],
+            "manufacturer": "Shimmer",
+            "caps": ["GSR"],
+            "desc": {
+              "device": {
+                "name": "Shimmer GSR+ Unit",
+                "type": "wearable_sensor",
+                "serial": "A923"
+              }
+            }
+          },
+          "time_series": gsrData.map(d => [d.gsr]),
+          "time_stamps": gsrData.map(d => d.time)
+        };
+        xdfData.streams.push(gsrStream);
+      }
+
+      // PPG数据流
+      if (ppgData.length > 0) {
+        const ppgStream = {
+          "info": {
+            "name": "Shimmer_PPG",
+            "type": "Physiological", 
+            "channel_count": 1,
+            "nominal_srate": 50,
+            "channel_format": "float32",
+            "source_id": "Shimmer_A923",
+            "channels": [
+              {
+                "label": "PPG_A13",
+                "unit": "millivolts",
+                "type": "PPG",
+                "description": "Photoplethysmography - Heart Rate Signal"
+              }
+            ],
+            "manufacturer": "Shimmer",
+            "caps": ["PPG"],
+            "desc": {
+              "device": {
+                "name": "Shimmer GSR+ Unit",
+                "type": "wearable_sensor", 
+                "serial": "A923"
+              }
+            }
+          },
+          "time_series": ppgData.map(d => [d.ppg]),
+          "time_stamps": ppgData.map(d => d.time)
+        };
+        xdfData.streams.push(ppgStream);
+      }
+
+      return xdfData;
+    }
+
+    // 导出XDF文件
+    function exportPhysiologicalXDF(xdfData, filename = 'physiological_data.xdf') {
+      const blob = new Blob([JSON.stringify(xdfData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
 
     // XDF 格式处理器类
     class XDFFormatter {
@@ -634,6 +1142,108 @@
 4. 等待服务启动后，刷新本页面即可使用 DeepFace API`);
     }
 
+    // 生理信号导入事件监听器
+    
+    // 统一文件导入事件（支持CSV和XDF）
+    document.getElementById('physioFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      try {
+        const text = await file.text();
+        const fileExtension = file.name.toLowerCase().split('.').pop();
+        let xdfData;
+        
+        if (fileExtension === 'csv') {
+          // CSV先转换为XDF格式
+          console.log('检测到CSV文件，转换为XDF格式...');
+          xdfData = parseShimmerCSVToXDF(text);
+        } else if (fileExtension === 'xdf' || fileExtension === 'json') {
+          // 直接解析XDF
+          console.log('检测到XDF文件，直接解析...');
+          xdfData = typeof text === 'string' ? JSON.parse(text) : text;
+        } else {
+          throw new Error('不支持的文件格式。请选择 CSV、XDF 或 JSON 文件。');
+        }
+        
+        // 从XDF格式解析数据用于显示
+        const parsedData = parseXDFData(xdfData);
+        
+        // 存储数据
+        physiologicalData.gsr = parsedData.gsr || [];
+        physiologicalData.ppg = parsedData.ppg || [];
+        physiologicalData.startTime = Date.now();
+        
+        // 存储XDF格式数据用于导出
+        window.convertedPhysiologicalXDF = xdfData;
+        
+        // 更新状态
+        document.getElementById('physiologicalStatus').textContent = 
+          `已导入: GSR ${physiologicalData.gsr.length}点, PPG ${physiologicalData.ppg.length}点`;
+        
+        // 启用转换按钮
+        document.getElementById('convertToXdfBtn').disabled = false;
+        
+        // 更新图表并自动显示
+        if (physiologicalData.gsr.length > 0) {
+          chart.updateGSRData(physiologicalData.gsr);
+          chart.toggleGSRDisplay(true); // 自动显示GSR
+        }
+        if (physiologicalData.ppg.length > 0) {
+          chart.updatePPGData(physiologicalData.ppg);
+          chart.togglePPGDisplay(true); // 自动显示PPG
+        }
+        
+        console.log(`${fileExtension.toUpperCase()}数据处理成功:`, {
+          gsrPoints: physiologicalData.gsr.length,
+          ppgPoints: physiologicalData.ppg.length,
+          xdfStreams: xdfData.streams.length
+        });
+        
+      } catch (error) {
+        alert(`文件导入失败: ${error.message}`);
+        console.error('文件解析错误:', error);
+      }
+    });
+
+    // 转换并导出XDF按钮
+    document.getElementById('convertToXdfBtn').addEventListener('click', () => {
+      // 检查是否有生理信号数据
+      const hasGSR = physiologicalData.gsr && physiologicalData.gsr.length > 0;
+      const hasPPG = physiologicalData.ppg && physiologicalData.ppg.length > 0;
+      
+      if (!hasGSR && !hasPPG) {
+        alert('请先导入生理信号数据');
+        return;
+      }
+      
+      try {
+        let xdfData;
+        
+        // 如果已经有转换好的XDF数据，直接使用；否则重新转换
+        if (window.convertedPhysiologicalXDF) {
+          xdfData = window.convertedPhysiologicalXDF;
+        } else {
+          // 从当前数据重新生成XDF格式
+          xdfData = convertPhysiologicalToXDF(physiologicalData.gsr || [], physiologicalData.ppg || []);
+        }
+        
+        // 直接导出XDF文件
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+        const filename = `physiological_data_${timestamp}.xdf`;
+        
+        exportPhysiologicalXDF(xdfData, filename);
+        
+        alert(`导出成功！\n文件名: ${filename}\n- 数据流: ${xdfData.streams.length} 个\n- GSR: ${physiologicalData.gsr?.length || 0} 数据点\n- PPG: ${physiologicalData.ppg?.length || 0} 数据点`);
+        
+        console.log('XDF文件导出成功:', xdfData);
+        
+      } catch (error) {
+        alert('XDF导出失败: ' + error.message);
+        console.error('XDF导出错误:', error);
+      }
+    });
+
     // —— 视频文件选择功能 —— //
     let videoSelected = false;
     
@@ -672,6 +1282,12 @@
       analyzeBtn.textContent = '① Analyze（预处理）';
       downloadBtn.disabled = true;
       statusEl.textContent = '';
+      
+      // 重置生理信号数据
+      physiologicalData = { gsr: [], ppg: [], startTime: null };
+      chart.clearPhysiologicalData();
+      document.getElementById('physiologicalStatus').textContent = '未导入数据';
+      document.getElementById('convertToXdfBtn').disabled = true;
       
       // 重置数据处理状态
       valenceOffset = 0;

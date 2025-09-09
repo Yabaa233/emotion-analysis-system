@@ -101,6 +101,30 @@ class VAChart {
         pointHoverRadius: 12,
         showLine: false,
         hidden: true // 默认隐藏
+      },
+      {
+        label: 'GSR Conductance (μS)',
+        fill: false,
+        borderWidth: 2,
+        borderColor: '#ff9800',
+        data: [],
+        lineTension: 0,
+        pointRadius: 0,
+        showLine: true,
+        yAxisID: 'y-axis-gsr',
+        hidden: true // 默认隐藏
+      },
+      {
+        label: 'PPG Heart Rate (mV)',
+        fill: false,
+        borderWidth: 2,
+        borderColor: '#e91e63',
+        data: [],
+        lineTension: 0,
+        pointRadius: 0,
+        showLine: true,
+        yAxisID: 'y-axis-ppg',
+        hidden: true // 默认隐藏
       }
     ];
 
@@ -128,6 +152,8 @@ class VAChart {
             ticks: { min: 0, suggestedMax: this.MAX + this.STEP, stepSize: this.STEP }
           }],
           yAxes: [{
+            id: 'y-axis-main',
+            position: 'left',
             display: true,
             scaleLabel: { display: true, labelString: 'Valence / Arousal' },
             ticks: { min: -1, max: 1, stepSize: 0.5, fontColor: '#fff' },
@@ -136,6 +162,20 @@ class VAChart {
               zeroLineColor: 'rgba(255,255,255,0.35)',
               zeroLineWidth: 2
             }
+          }, {
+            id: 'y-axis-gsr',
+            position: 'right',
+            display: false,
+            scaleLabel: { display: true, labelString: 'GSR (μS)', fontColor: '#ff9800' },
+            ticks: { fontColor: '#ff9800' },
+            gridLines: { display: false }
+          }, {
+            id: 'y-axis-ppg',
+            position: 'right',
+            display: false,
+            scaleLabel: { display: true, labelString: 'PPG (mV)', fontColor: '#e91e63' },
+            ticks: { fontColor: '#e91e63' },
+            gridLines: { display: false }
           }]
         },
         tooltips: { mode: 'index', intersect: false }
@@ -145,7 +185,7 @@ class VAChart {
     Chart.defaults.global.defaultFontColor = "#fff";
 
     this._chart = new Chart(ctx, config);
-    this._datasets = datasets;   // 0: Valence, 1: Arousal, 2: No-face, 3: Marker, 4: Valence_dt, 5: Arousal_dt, 6: Rise Events, 7: Fall Events
+    this._datasets = datasets;   // 0: Valence, 1: Arousal, 2: No-face, 3: Marker, 4: Valence_dt, 5: Arousal_dt, 6: Rise Events, 7: Fall Events, 8: GSR, 9: PPG
     this._config = config;
 
     this._noDataTime = null;
@@ -369,6 +409,63 @@ class VAChart {
       meta7.hidden = !show;
       this._chart.update();
     }
+  }
+
+  // 更新GSR数据
+  updateGSRData(gsrData) {
+    if (!this._datasets[8]) return;
+    
+    const gsrPoints = [];
+    for (const record of gsrData) {
+      if (Number.isFinite(record.gsr)) {
+        gsrPoints.push({ x: record.time, y: record.gsr });
+      }
+    }
+    
+    this._datasets[8].data = gsrPoints;
+    this._chart.update();
+  }
+
+  // 更新PPG数据
+  updatePPGData(ppgData) {
+    if (!this._datasets[9]) return;
+    
+    const ppgPoints = [];
+    for (const record of ppgData) {
+      if (Number.isFinite(record.ppg)) {
+        ppgPoints.push({ x: record.time, y: record.ppg });
+      }
+    }
+    
+    this._datasets[9].data = ppgPoints;
+    this._chart.update();
+  }
+
+  // 切换GSR显示
+  toggleGSRDisplay(show) {
+    if (this._datasets[8]) {
+      const meta = this._chart.getDatasetMeta(8);
+      meta.hidden = !show;
+      this._config.options.scales.yAxes[1].display = show; // 显示GSR Y轴
+      this._chart.update();
+    }
+  }
+
+  // 切换PPG显示
+  togglePPGDisplay(show) {
+    if (this._datasets[9]) {
+      const meta = this._chart.getDatasetMeta(9);
+      meta.hidden = !show;
+      this._config.options.scales.yAxes[2].display = show; // 显示PPG Y轴
+      this._chart.update();
+    }
+  }
+
+  // 清除生理信号数据
+  clearPhysiologicalData() {
+    if (this._datasets[8]) this._datasets[8].data = [];
+    if (this._datasets[9]) this._datasets[9].data = [];
+    this._chart.update();
   }
 }
 
