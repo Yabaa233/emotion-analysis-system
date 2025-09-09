@@ -1,0 +1,2461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Valence/Arousal + 7 Emotions — Analyze → XDF → Playback</title>
+  <style>
+    body { background:#222; color:#fff; font-family:sans-serif; padding:1em; }
+    .row { margin: 1em 0; }
+    .muted { color: #888; margin-left: 1em; }
+    button { margin-right: 0.5em; }
+    canvas { box-shadow: 0 0 12px; }
+    video { display:block; margin-bottom:8px; width:100%; max-width:720px; background:#000; }
+    canvas { background:#333; max-width:100%; height:400px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; align-items:center; }
+    button { padding:0.5em 1em; font-size:14px; border:0; border-radius:6px; background:#444; color:#fff; cursor:pointer; }
+    button:hover { background:#555; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .muted { opacity:.75; font-size:12px; }
+    
+    /* 新增控制面板样式 */
+    input[type="checkbox"] { transform: scale(1.2); margin-right: 3px; }
+    input[type="number"] { padding: 4px 8px; border: 1px solid #666; border-radius: 4px; background: #222; color: #fff; }
+    input[type="number"]:focus { border-color: #888; outline: none; }
+    label { cursor: pointer; user-select: none; }
+  </style>
+</head>
+<body>
+  <h2>🎥 Valence / Arousal + 7 Emotions：先分析，再同步回放（支持 LSL 流 / 导入XDF）</h2>
+
+  <div class="row">
+    <button id="selectVideoBtn">📁 选择视频文件</button>
+    <input id="videoInput" type="file" accept="video/*" style="display:none">
+    <span id="videoInfo" class="muted">请先选择视频文件</span>
+  </div>
+
+  <div style="position: relative; display: inline-block;">
+    <video id="video" controls crossorigin="anonymous" style="display:none;">
+      <!-- 视频源将通过JavaScript动态设置 -->
+    </video>
+    
+    <!-- 检测区域覆盖层 -->
+    <div id="regionOverlay" style="
+      position: absolute;
+      top: 0;
+      left: 0;
+      pointer-events: none;
+      border: 2px solid #ff0000;
+      background: rgba(255,0,0,0.1);
+      display: none;
+      z-index: 10;
+    "></div>
+    
+    <!-- 拖拽控制点 -->
+    <div id="dragHandle" style="
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      background: #ff0000;
+      border: 2px solid #fff;
+      cursor: se-resize;
+      display: none;
+      z-index: 11;
+    "></div>
+  </div>
+
+  <div class="row">
+    <button id="analyzeBtn" disabled>① Analyze（预处理）</button>
+    <button id="downloadBtn" disabled>⬇️ 导出 XDF</button>
+    <button id="importBtn">📂 导入 XDF 回放</button>
+    <input id="xdfInput" type="file" accept=".xdf" style="display:none">
+    <label for="frameInterval" style="margin-left: 20px;">每N帧抽一帧:</label>
+    <input id="frameInterval" type="number" min="1" max="300" value="10" style="width:60px;">
+    <span id="status" class="muted"></span>
+  </div>
+
+  <div class="row">
+    <button id="toggleRegion">启用区域检测</button>
+    <span id="regionInfo" style="margin-left: 20px; color: #ccc;">点击启用后可在视频上拖拽选择检测区域</span>
+  </div>
+
+  <div class="row" id="zoomRow">
+    <label for="windowStart">起点时间：</label>
+    <input id="windowStart" type="number" min="0" step="0.1" placeholder="秒" style="width:120px" value="0">
+    <label for="windowEnd">终点时间：</label>
+    <input id="windowEnd" type="number" min="0" step="0.1" placeholder="秒" style="width:120px" value="30">
+    <button id="applyWindow">应用</button>
+  </div>
+
+  <!-- 数据显示控制面板 -->
+  <div class="row" style="background: #333; padding: 10px; border-radius: 5px; margin: 10px 0;">
+    <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: center;">
+      
+      <!-- 检测模式控制 -->
+      <div style="display: flex; gap: 15px; align-items: center; border-right: 1px solid #555; padding-right: 15px;">
+        <!-- API 选择器 -->
+        <div style="display: flex; gap: 10px; align-items: center; border-right: 1px solid #666; padding-right: 12px;">
+          <label style="color: #ccc; font-size: 12px;">情绪检测API:</label>
+          <select id="apiSelector" style="background: #444; color: #fff; border: 1px solid #666; border-radius: 4px; padding: 2px 6px; font-size: 12px;">
+            <option value="morphcast">MorphCast (云端)</option>
+            <option value="deepface">DeepFace (本地)</option>
+          </select>
+          <span id="apiStatus" style="font-size: 11px; color: #888;">状态: 未连接</span>
+        </div>
+        
+        <label style="display: flex; align-items: center; gap: 5px; color: #ccc;">
+          <input type="checkbox" id="emotionToggle" checked>
+          <span>启用7类情绪检测</span>
+        </label>
+      </div>
+    </div>
+    
+    <!-- 状态显示 -->
+    <div style="margin-top: 8px; font-size: 12px; color: #888;">
+      <span id="dataProcessingStatus">数据处理状态：正常显示</span>
+    </div>
+  </div>
+
+  <canvas id="chart"></canvas>
+  
+  <!-- Rate-of-Change 数据后处理控制面板 -->
+  <div id="rocProcessingPanel" style="display: none; margin-top: 20px; background: #2a2a2a; padding: 15px; border-radius: 8px; border: 1px solid #444;">
+    <h3 style="color: #fff; margin-bottom: 15px;">📊 Rate-of-Change 数据后处理流程</h3>
+    
+    <!-- 步骤0: 基础整理 -->
+    <div class="row" style="background: #333; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+      <h4 style="color: #fff; margin: 0 0 10px 0;">0️⃣ 基础整理</h4>
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <button id="sortDataBtn">时间对齐/去重</button>
+        <button id="resampleBtn">重采样(5Hz)</button>
+        <span id="step0Status" class="muted">未处理</span>
+      </div>
+    </div>
+    
+    <!-- 步骤1: 去伪迹/去尖峰 -->
+    <div class="row" style="background: #333; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+      <h4 style="color: #fff; margin: 0 0 10px 0;">1️⃣ 去伪迹/去尖峰</h4>
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <label style="color: #ccc;">中值滤波窗口:</label>
+        <input id="medianWindow" type="number" min="3" max="15" step="2" value="5" style="width:60px;">
+        <button id="medianFilterBtn">应用中值滤波</button>
+        <button id="outlierClipBtn">异常值截断</button>
+        <span id="step1Status" class="muted">未处理</span>
+      </div>
+    </div>
+    
+    <!-- 步骤2: 基线与尺度 -->
+    <div class="row" style="background: #333; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+      <h4 style="color: #fff; margin: 0 0 10px 0;">2️⃣ 基线与尺度标准化</h4>
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <button id="zeroMeanBtn">零均值化</button>
+        <button id="zeroScaleBtn">归零缩放</button>
+        <button id="zScoreBtn">Z-Score标准化</button>
+        <span id="step2Status" class="muted">未处理</span>
+      </div>
+    </div>
+    
+    <!-- 步骤3: 导数计算 -->
+    <div class="row" style="background: #333; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+      <h4 style="color: #fff; margin: 0 0 10px 0;">3️⃣ 变化率计算</h4>
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <label style="color: #ccc;">SG窗口:</label>
+        <input id="sgWindow" type="number" min="7" max="31" step="2" value="15" style="width:60px;">
+        <button id="sgDerivativeBtn">SG导数</button>
+        <label style="color: #ccc;">斜率窗口:</label>
+        <input id="slopeWindow" type="number" min="5" max="21" step="2" value="9" style="width:60px;">
+        <button id="slopeDerivativeBtn">鲁棒斜率</button>
+        <span id="step3Status" class="muted">未处理</span>
+      </div>
+    </div>
+    
+    <!-- 步骤4: 导数后处理 -->
+    <div class="row" style="background: #333; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+      <h4 style="color: #fff; margin: 0 0 10px 0;">4️⃣ 导数后处理</h4>
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <button id="smoothDerivativeBtn">导数平滑(3点)</button>
+        <button id="normalizeDerivativeBtn">导数标准化</button>
+        <span id="step4Status" class="muted">未处理</span>
+      </div>
+    </div>
+    
+    <!-- 步骤5: 事件判定 -->
+    <div class="row" style="background: #333; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+      <h4 style="color: #fff; margin: 0 0 10px 0;">5️⃣ 事件判定</h4>
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <label style="color: #ccc;">上升阈值:</label>
+        <input id="upThreshold" type="number" min="-2" max="2" step="0.01" value="0.12" style="width:80px;">
+        <label style="color: #ccc;">下降阈值:</label>
+        <input id="downThreshold" type="number" min="-2" max="2" step="0.01" value="-0.12" style="width:80px;">
+        <label style="color: #ccc;">最小持续(s):</label>
+        <input id="minDuration" type="number" min="0.1" max="5" step="0.1" value="0.8" style="width:80px;">
+        <button id="detectEventsBtn">检测事件</button>
+        <button id="showEventsBtn" style="display:none;">显示事件标记</button>
+        <span id="step5Status" class="muted">未处理</span>
+      </div>
+    </div>
+    
+    <!-- 控制按钮 -->
+    <div class="row" style="border-top: 1px solid #555; padding-top: 10px;">
+      <button id="resetProcessingBtn" style="background: #d32f2f;">重置所有处理</button>
+      <button id="showDerivativeBtn">显示/隐藏导数曲线</button>
+      <button id="exportProcessedBtn">导出处理后数据</button>
+      <span id="processingStatus" style="color: #4caf50; margin-left: 20px;">就绪</span>
+    </div>
+  </div>
+  
+  <!-- 7类情绪显示区域 -->
+  <div id="emotionChartContainer" style="margin-top: 20px;">
+    <h3 style="color: #fff; margin-bottom: 10px;">🎭 7类情绪概率分布</h3>
+    <canvas id="emotionChart" style="background:#333; max-width:100%; height:300px;"></canvas>
+    
+    <!-- 当前时间点的情绪详情 -->
+    <div id="currentEmotionDetails" style="margin-top: 10px; padding: 10px; background: #333; border-radius: 5px;">
+      <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: center;">
+        <span id="currentEmotionDisplay" style="color: #fff; font-size: 16px; font-weight: bold;">--</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- SDK + Chart.js + Numeric.js -->
+  <script src="https://ai-sdk.morphcast.com/v1.16/ai-sdk.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@2.8.0"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
+
+  <script type="module">
+    import { VAChart } from './va-chart.js';
+
+    // 方式C：在此写死 MorphCast License Key（优先使用）。留空则按 URL/localStorage 读取。
+    const LICENSE_KEY = 'skb80c78744414c9ff1cfb03e980a675a55b6eea31e6cd';
+
+    const video = document.getElementById('video');
+    const selectVideoBtn = document.getElementById('selectVideoBtn');
+    const videoInput = document.getElementById('videoInput');
+    const videoInfo = document.getElementById('videoInfo');
+    const chartCanvas = document.getElementById('chart');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const importBtn = document.getElementById('importBtn');
+    const xdfInput = document.getElementById('xdfInput');
+    const frameIntervalInput = document.getElementById('frameInterval');
+    const statusEl = document.getElementById('status');
+
+    // 隐藏抓帧画布（分析阶段用）
+    const grabCanvas = document.createElement('canvas');
+    const grabCtx = grabCanvas.getContext('2d', { willReadFrequently: true });
+
+    const chart = new VAChart(chartCanvas);
+
+    // 情绪检测状态
+    let emotionDetectionEnabled = true; // 是否启用情绪检测
+    let emotionChart = null; // 情绪图表实例
+    const emotionNames = ['Angry', 'Disgust', 'Fear', 'Happy', 'Neutral', 'Sad', 'Surprise'];
+    const emotionColors = ['#ff6b6b', '#8b5cf6', '#06b6d4', '#10b981', '#6b7280', '#3b82f6', '#f59e0b'];
+
+    // API 管理
+    let currentAPI = 'morphcast'; // 当前使用的API: 'morphcast' 或 'deepface'
+    let deepfaceApiUrl = 'http://localhost:5000'; // DeepFace API 地址
+    let apiConnected = false; // API 连接状态
+
+    // 初始化情绪图表
+    function initEmotionChart() {
+      const emotionChartCanvas = document.getElementById('emotionChart');
+      const ctx = emotionChartCanvas.getContext('2d');
+      
+      const datasets = emotionNames.map((name, index) => ({
+        label: name,
+        backgroundColor: emotionColors[index],
+        borderColor: emotionColors[index],
+        data: [],
+        fill: false,
+        lineTension: 0,
+        pointRadius: 0,
+        borderWidth: 2
+      }));
+
+      emotionChart = new Chart(ctx, {
+        type: 'line',
+        data: { datasets },
+        options: {
+          responsive: false,
+          animation: { duration: 0 },
+          legend: { 
+            position: 'top', 
+            labels: { fontColor: '#fff' },
+            onClick: (e, legendItem) => {
+              const index = legendItem.datasetIndex;
+              const meta = emotionChart.getDatasetMeta(index);
+              meta.hidden = meta.hidden === null ? !datasets[index].hidden : !meta.hidden;
+              emotionChart.update();
+            }
+          },
+          scales: {
+            xAxes: [{
+              type: 'linear',
+              display: true,
+              scaleLabel: { display: true, labelString: 'time (sec)', fontColor: '#fff' },
+              ticks: { min: 0, suggestedMax: 300, stepSize: 2, fontColor: '#fff' },
+              gridLines: {
+                color: 'rgba(255,255,255,0.08)',
+                zeroLineColor: 'rgba(255,255,255,0.35)',
+                zeroLineWidth: 2
+              }
+            }],
+            yAxes: [{
+              display: true,
+              scaleLabel: { display: true, labelString: 'Probability', fontColor: '#fff' },
+              ticks: { min: 0, max: 1, stepSize: 0.2, fontColor: '#fff' },
+              gridLines: {
+                color: 'rgba(255,255,255,0.08)',
+                zeroLineColor: 'rgba(255,255,255,0.35)',
+                zeroLineWidth: 2
+              }
+            }]
+          },
+          tooltips: { mode: 'index', intersect: false }
+        }
+      });
+      
+      Chart.defaults.global.defaultFontColor = "#fff";
+    }
+    
+    initEmotionChart();
+
+    // 暴露全局变量供va-chart.js访问
+    window.emotionChart = emotionChart;
+    window.emotionDetectionEnabled = emotionDetectionEnabled;
+
+    // XDF 格式处理器类
+    class XDFFormatter {
+      constructor() {
+        this.startTime = Date.now();
+      }
+
+      // 导出为 XDF 格式
+      exportToXDF(dataLog, emotionDetectionEnabled, emotionNames) {
+        if (dataLog.length === 0) {
+          throw new Error('No data to export');
+        }
+
+        // 创建符合LabRecorder标准的XDF格式
+        const xdfData = {
+          info: {
+            version: [1, 0], // LabRecorder期望的版本格式
+            created: new Date().toISOString(),
+            software: 'EmotionAnalysisApp',
+            hostname: window.location.hostname || 'localhost',
+            session_id: `emotion_session_${this.startTime}`
+          },
+          streams: []
+        };
+
+        // VA数据流 - 包含所有数据点，包括无人脸的
+        const vaStream = {
+          info: {
+            name: 'EmotionAnalysis_VA',
+            type: 'Emotion',
+            channel_count: 3,
+            nominal_srate: 0.0, // LabRecorder期望浮点数
+            channel_format: 'float32',
+            source_id: `EmotionVA_${this.startTime}`,
+            uid: this.generateUID(),
+            created_at: (Date.now() / 1000.0), // Unix时间戳
+            hostname: window.location.hostname || 'localhost',
+            // LabRecorder兼容的通道描述格式
+            desc: {
+              acquisition: {
+                manufacturer: 'EmotionAnalysisApp',
+                model: 'VA_Analyzer_v1.0'
+              },
+              channels: {
+                channel: [
+                  {
+                    label: 'Valence',
+                    unit: 'normalized',
+                    type: 'VA'
+                  },
+                  {
+                    label: 'Arousal', 
+                    unit: 'normalized',
+                    type: 'VA'
+                  },
+                  {
+                    label: 'FaceDetected',
+                    unit: 'boolean',
+                    type: 'Marker'
+                  }
+                ]
+              }
+            }
+          },
+          time_series: [],
+          time_stamps: []
+        };
+
+        // 情绪数据流 - 只包含有人脸且有情绪数据的点
+        let emotionStream = null;
+        if (emotionDetectionEnabled && dataLog.some(d => d.emotions)) {
+          emotionStream = {
+            info: {
+              name: 'EmotionAnalysis_Emotions',
+              type: 'Emotion',
+              channel_count: 7,
+              nominal_srate: 0.0,
+              channel_format: 'float32',
+              source_id: `Emotions_${this.startTime}`,
+              uid: this.generateUID(),
+              created_at: (Date.now() / 1000.0),
+              hostname: window.location.hostname || 'localhost',
+              desc: {
+                acquisition: {
+                  manufacturer: 'EmotionAnalysisApp',
+                  model: 'Emotion_Analyzer_v1.0'
+                },
+                channels: {
+                  channel: emotionNames.map(name => ({
+                    label: name,
+                    unit: 'probability',
+                    type: 'Emotion'
+                  }))
+                }
+              }
+            },
+            time_series: [],
+            time_stamps: []
+          };
+        }
+
+        // 填充所有数据点，确保时间戳是相对于第一个数据点的
+        const baseTime = dataLog.length > 0 ? dataLog[0].time : 0;
+        
+        dataLog.forEach(entry => {
+          const relativeTime = (entry.time || 0) - baseTime;
+          
+          // VA数据流：包含所有数据点
+          vaStream.time_series.push([
+            isFinite(entry.valence) ? entry.valence : 0,  // 无人脸时为0
+            isFinite(entry.arousal) ? entry.arousal : 0,  // 无人脸时为0  
+            entry.face ? 1.0 : 0.0   // 人脸检测状态
+          ]);
+          vaStream.time_stamps.push(relativeTime);
+
+          // 情绪数据流：只包含有人脸且有情绪数据的点
+          if (emotionStream && entry.face && entry.emotions) {
+            const emotionArray = emotionNames.map(name => 
+              entry.emotions[name] || 0.0
+            );
+            emotionStream.time_series.push(emotionArray);
+            emotionStream.time_stamps.push(relativeTime);
+          }
+        });
+
+        xdfData.streams.push(vaStream);
+        if (emotionStream) {
+          xdfData.streams.push(emotionStream);
+        }
+
+      return xdfData;
+    }
+
+    // 生成LSL标准的UID
+      generateUID() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+          const r = Math.random() * 16 | 0;
+          const v = c == 'x' ? r : (r & 0x3 | 0x8);
+          return v.toString(16);
+        });
+      }      // 从 XDF 格式导入
+      importFromXDF(xdfData) {
+        try {
+          const newDataLog = [];
+          
+          // 找到VA和情绪数据流
+          const vaStream = xdfData.streams.find(s => s.info.name === 'EmotionAnalysis_VA');
+          const emotionStream = xdfData.streams.find(s => s.info.name === 'EmotionAnalysis_Emotions');
+
+          if (!vaStream) {
+            throw new Error('No VA data stream found in XDF file');
+          }
+
+          // 重建所有数据点（包括无人脸的）
+          vaStream.time_series.forEach((vaData, index) => {
+            const timestamp = vaStream.time_stamps[index];
+            const faceDetected = vaData.length > 2 ? vaData[2] > 0.5 : true; // 向后兼容
+            
+            const dataPoint = {
+              time: timestamp,
+              valence: faceDetected ? vaData[0] : NaN,
+              arousal: faceDetected ? vaData[1] : NaN,
+              face: faceDetected
+            };
+
+            // 添加情绪数据（如果有且有人脸）
+            if (emotionStream && faceDetected) {
+              // 查找最接近时间戳的情绪数据
+              let closestEmotionIndex = -1;
+              let minTimeDiff = Infinity;
+              
+              emotionStream.time_stamps.forEach((emotionTime, i) => {
+                const timeDiff = Math.abs(emotionTime - timestamp);
+                if (timeDiff < minTimeDiff) {
+                  minTimeDiff = timeDiff;
+                  closestEmotionIndex = i;
+                }
+              });
+
+              if (closestEmotionIndex !== -1 && minTimeDiff < 0.1) { // 100ms容差
+                const emotionData = emotionStream.time_series[closestEmotionIndex];
+                const emotionNames = ['Angry', 'Disgust', 'Fear', 'Happy', 'Neutral', 'Sad', 'Surprise'];
+                
+                dataPoint.emotions = {};
+                emotionNames.forEach((name, i) => {
+                  dataPoint.emotions[name] = emotionData[i] || 0;
+                });
+                
+                // 计算主导情绪
+                let maxEmotion = 'Neutral';
+                let maxValue = dataPoint.emotions.Neutral || 0;
+                emotionNames.forEach(name => {
+                  if (dataPoint.emotions[name] > maxValue) {
+                    maxValue = dataPoint.emotions[name];
+                    maxEmotion = name;
+                  }
+                });
+                dataPoint.dominantEmotion = maxEmotion;
+              }
+            }
+
+            newDataLog.push(dataPoint);
+          });
+
+          return newDataLog;
+        } catch (error) {
+          console.error('Failed to import XDF data:', error);
+          throw error;
+        }
+      }
+    }
+
+    // 创建XDF格式处理器实例
+    const xdfFormatter = new XDFFormatter();
+
+    // 情绪检测切换
+    function toggleEmotionDetection() {
+      const container = document.getElementById('emotionChartContainer');
+      if (emotionDetectionEnabled) {
+        container.style.display = 'block';
+      } else {
+        container.style.display = 'none';
+      }
+    }
+
+    document.getElementById('emotionToggle').addEventListener('change', (e) => {
+      emotionDetectionEnabled = e.target.checked;
+      window.emotionDetectionEnabled = emotionDetectionEnabled; // 更新全局变量
+      toggleEmotionDetection();
+    });
+
+    // API 选择器事件监听
+    document.getElementById('apiSelector').addEventListener('change', async (e) => {
+      currentAPI = e.target.value;
+      console.log(`切换到 ${currentAPI} API`);
+      
+      if (currentAPI === 'deepface') {
+        await checkDeepFaceAPI();
+      } else {
+        apiConnected = true; // MorphCast 总是可用的（如果有license key）
+        updateApiStatus('MorphCast 已选择');
+      }
+    });
+
+    // 检查 DeepFace API 状态
+    async function checkDeepFaceAPI() {
+      const statusSpan = document.getElementById('apiStatus');
+      
+      try {
+        statusSpan.textContent = '状态: 连接中...';
+        statusSpan.style.color = '#fbbf24';
+        
+        const response = await fetch(`${deepfaceApiUrl}/health`, {
+          method: 'GET',
+          timeout: 5000
+        });
+        
+        if (response.ok) {
+          apiConnected = true;
+          updateApiStatus('DeepFace 已连接');
+          console.log('DeepFace API 连接成功');
+        } else {
+          throw new Error('API 响应错误');
+        }
+      } catch (error) {
+        console.error('DeepFace API 连接失败:', error);
+        apiConnected = false;
+        updateApiStatus('DeepFace 未连接');
+        
+        // 如果连接失败，询问用户是否启动服务
+        if (confirm('DeepFace API 服务未启动。\n\n点击"确定"查看启动说明，点击"取消"切换回 MorphCast。')) {
+          showDeepFaceStartupHelp();
+        } else {
+          document.getElementById('apiSelector').value = 'morphcast';
+          currentAPI = 'morphcast';
+          apiConnected = true;
+          updateApiStatus('MorphCast 已选择');
+        }
+      }
+    }
+
+    // 更新 API 状态显示
+    function updateApiStatus(message) {
+      const statusSpan = document.getElementById('apiStatus');
+      statusSpan.textContent = `状态: ${message}`;
+      
+      if (message.includes('已连接') || message.includes('已选择')) {
+        statusSpan.style.color = '#10b981';
+      } else if (message.includes('连接中')) {
+        statusSpan.style.color = '#fbbf24';
+      } else {
+        statusSpan.style.color = '#ef4444';
+      }
+    }
+
+    // 显示 DeepFace 启动帮助
+    function showDeepFaceStartupHelp() {
+      alert(`DeepFace API 服务启动说明：
+
+1. 打开命令行，进入项目目录：
+   cd c:\\MyWork\\RunMorphCast\\deepface-api
+
+2. 运行管理脚本：
+   manage_python.bat
+
+3. 选择 "1. Install Python Environment"（首次使用）
+   然后选择 "2. Start Service"
+
+4. 等待服务启动后，刷新本页面即可使用 DeepFace API`);
+    }
+
+    // —— 视频文件选择功能 —— //
+    let videoSelected = false;
+    
+    // 点击选择视频按钮
+    selectVideoBtn.onclick = () => videoInput.click();
+    
+    // 处理视频文件选择
+    videoInput.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      // 验证文件类型
+      if (!file.type.startsWith('video/')) {
+        alert('请选择有效的视频文件');
+        return;
+      }
+      
+      // 创建本地URL
+      const videoURL = URL.createObjectURL(file);
+      
+      // 设置视频源
+      video.src = videoURL;
+      video.style.display = 'block';
+      
+      // 更新信息显示
+      const fileSize = (file.size / 1024 / 1024).toFixed(2);
+      videoInfo.textContent = `已选择: ${file.name} (${fileSize}MB)`;
+      
+      // 重置状态
+      videoSelected = true;
+      analyzed = false;
+      dataLog = [];
+      originalDataLog = [];
+      chart.reset();
+      analyzeBtn.disabled = false;
+      analyzeBtn.textContent = '① Analyze（预处理）';
+      downloadBtn.disabled = true;
+      statusEl.textContent = '';
+      
+      // 重置数据处理状态
+      valenceOffset = 0;
+      arousalOffset = 0;
+      updateDataProcessingStatus();
+      
+      // 重置SDK状态
+      if (sdkInstance) {
+        try {
+          sdkInstance.stop();
+        } catch (e) {
+          console.warn('停止旧SDK实例时出错:', e);
+        }
+        sdkInstance = null;
+      }
+      loaderStarted = false;
+      
+      console.log(`视频文件已选择: ${file.name}, 大小: ${fileSize}MB`);
+    };
+
+    // —— 数据与状态 —— //
+    let dataLog = [];
+    let originalDataLog = []; // 保存原始数据，用于重置
+    let analyzed = false;
+    let loaderStarted = false;
+    let lastFaceDetected = true;
+    let lastCaptureTime = 0; // 全局声明
+    let currentFrameHasFace = false; // 当前帧是否检测到脸部
+    let sdkInstance = null; // SDK实例，用于停止
+
+    // 数据处理状态
+    let valenceOffset = 0; // Valence偏移量
+    let arousalOffset = 0; // Arousal偏移量
+
+    // Rate-of-Change 处理状态
+    let processedDataLog = []; // 处理后的数据
+    let derivativeDataLog = []; // 导数数据
+    let eventsLog = []; // 检测到的事件
+    let processingSteps = {
+      step0: false, // 基础整理
+      step1: false, // 去伪迹
+      step2: false, // 标准化
+      step3: false, // 导数计算
+      step4: false, // 导数后处理
+      step5: false  // 事件判定
+    };
+    let showDerivative = false; // 是否显示导数曲线
+    let showEvents = false; // 是否显示事件标记
+
+    // =================== Rate-of-Change 数据处理函数 ===================
+    
+    // 中值滤波函数
+    function medianFilter(series, win = 5) {
+      const half = Math.floor(win / 2);
+      const out = series.map(v => v);
+      for (let i = 0; i < series.length; i++) {
+        const w = [];
+        for (let k = i - half; k <= i + half; k++) {
+          if (k >= 0 && k < series.length) {
+            const v = series[k];
+            if (Number.isFinite(v)) w.push(v);
+          }
+        }
+        out[i] = w.length ? w.sort((a,b)=>a-b)[Math.floor(w.length/2)] : NaN;
+      }
+      return out;
+    }
+
+    // Z-score标准化
+    function zscore(arr) {
+      const vals = arr.filter(Number.isFinite);
+      if (vals.length === 0) return arr.map(() => NaN);
+      const mu = vals.reduce((s,v)=>s+v,0)/vals.length;
+      const sigma = Math.sqrt(vals.reduce((s,v)=>s+(v-mu)*(v-mu),0)/vals.length) || 1;
+      return arr.map(v => Number.isFinite(v) ? (v - mu) / sigma : NaN);
+    }
+
+    // 鲁棒导数（滑动线性回归斜率）
+    function slopeByWindow(t, x, win = 9) {
+      const half = Math.floor(win/2);
+      const out = Array(x.length).fill(NaN);
+      for (let i = 0; i < x.length; i++) {
+        const L = Math.max(0, i - half), R = Math.min(x.length - 1, i + half);
+        let n=0, sumT=0, sumX=0, sumTT=0, sumTX=0;
+        for (let k = L; k <= R; k++) {
+          const xi = x[k]; if (!Number.isFinite(xi)) continue;
+          const ti = t[k];
+          n++; sumT += ti; sumX += xi; sumTT += ti*ti; sumTX += ti*xi;
+        }
+        const denom = n * sumTT - sumT * sumT;
+        if (n >= 2 && denom !== 0) out[i] = (n * sumTX - sumT * sumX) / denom;
+      }
+      return out;
+    }
+
+    // SG导数（简化版：滑动多项式拟合）
+    function sgDerivative(t, x, win = 15, poly = 3) {
+      const half = Math.floor(win/2);
+      const out = Array(x.length).fill(NaN);
+      
+      for (let i = 0; i < x.length; i++) {
+        const L = Math.max(0, i - half), R = Math.min(x.length - 1, i + half);
+        const T = [], Y = [];
+        const t0 = t[i];
+        
+        for (let k = L; k <= R; k++) {
+          if (!Number.isFinite(x[k])) continue;
+          const dt = t[k] - t0;
+          const row = [];
+          for (let d = 0; d <= poly; d++) row.push(Math.pow(dt, d));
+          T.push(row);
+          Y.push(x[k]);
+        }
+        
+        if (T.length < poly + 1) continue;
+        
+        try {
+          if (typeof numeric !== 'undefined') {
+            const TT = numeric.dot(numeric.transpose(T), T);
+            const TY = numeric.dot(numeric.transpose(T), Y);
+            const a = numeric.solve(TT, TY);
+            out[i] = a[1]; // 一阶导数系数
+          } else {
+            // 回退到简单差分
+            if (i > 0 && i < x.length - 1 && Number.isFinite(x[i-1]) && Number.isFinite(x[i+1])) {
+              out[i] = (x[i+1] - x[i-1]) / (t[i+1] - t[i-1]);
+            }
+          }
+        } catch (e) {
+          // 如果矩阵求解失败，回退到简单差分
+          if (i > 0 && i < x.length - 1 && Number.isFinite(x[i-1]) && Number.isFinite(x[i+1])) {
+            out[i] = (x[i+1] - x[i-1]) / (t[i+1] - t[i-1]);
+          }
+        }
+      }
+      return out;
+    }
+
+    // 移动平均平滑
+    function movingAverage(series, win = 3) {
+      const half = Math.floor(win / 2);
+      const out = Array(series.length).fill(NaN);
+      for (let i = 0; i < series.length; i++) {
+        let sum = 0, count = 0;
+        for (let k = i - half; k <= i + half; k++) {
+          if (k >= 0 && k < series.length && Number.isFinite(series[k])) {
+            sum += series[k];
+            count++;
+          }
+        }
+        out[i] = count > 0 ? sum / count : NaN;
+      }
+      return out;
+    }
+
+    // 事件检测
+    function detectEvents(t, dxdt, up=0.12, dn=-0.12, minDur=0.8) {
+      const events = [];
+      let state = 0, startIdx = -1;
+      
+      for (let i = 0; i < dxdt.length; i++) {
+        const v = dxdt[i];
+        if (!Number.isFinite(v)) continue;
+
+        if (state === 0) {
+          if (v >= up) { state = 1; startIdx = i; }
+          else if (v <= dn) { state = -1; startIdx = i; }
+        } else if (state === 1) {
+          if (v < up * 0.5) {
+            const dur = t[i] - t[startIdx];
+            if (dur >= minDur) events.push({type:'rise', t:t[startIdx], dur, idx: startIdx});
+            state = 0; startIdx = -1;
+          }
+        } else if (state === -1) {
+          if (v > dn * 0.5) {
+            const dur = t[i] - t[startIdx];
+            if (dur >= minDur) events.push({type:'fall', t:t[startIdx], dur, idx: startIdx});
+            state = 0; startIdx = -1;
+          }
+        }
+      }
+      return events;
+    }
+
+    // 更新处理状态显示
+    function updateProcessingStatus(step, status, message = '') {
+      processingSteps[step] = status;
+      const statusEl = document.getElementById(`${step}Status`);
+      if (statusEl) {
+        statusEl.textContent = status ? '✓ 已完成' : '未处理';
+        statusEl.style.color = status ? '#4caf50' : '#888';
+      }
+      
+      const mainStatus = document.getElementById('processingStatus');
+      if (mainStatus && message) {
+        mainStatus.textContent = message;
+      }
+    }
+
+    // MorphCast 自定义帧源 - 控制处理节奏
+    const customSource = {
+      crtImgData: null,
+      resolver: null,
+      shouldProcess: true, // 新增：控制是否处理帧
+      _stopped: false,     // 添加停止状态
+      analyzeFrame(imgData) {
+        if (!this.shouldProcess || this._stopped) return; // 跳过不需要处理的帧
+        if (this.resolver) { this.resolver(imgData); this.resolver = null; }
+        else { this.crtImgData = imgData; }
+      },
+      getFrame() {
+        if (this._stopped) return Promise.reject(new Error('Source stopped'));
+        if (this.crtImgData) { const p = Promise.resolve(this.crtImgData); this.crtImgData = null; return p; }
+        return new Promise(res => this.resolver = res);
+      },
+      start() { 
+        this._stopped = false; 
+        console.log('自定义帧源已启动');
+      },
+      stop() { 
+        this._stopped = true; 
+        this.shouldProcess = false;
+        if (this.resolver) { 
+          this.resolver = null; // 清理未完成的Promise
+        }
+        console.log('自定义帧源已停止');
+      },
+      get stopped() { return this._stopped; }
+    };
+
+    async function ensureLoader() {
+      if (loaderStarted) return;
+      loaderStarted = true;
+
+      // 优先顺序：写死常量 -> URL ?key= -> localStorage('mc_license')
+      const licKey = (LICENSE_KEY && LICENSE_KEY.trim()) || new URLSearchParams(location.search).get('key') || localStorage.getItem('mc_license') || '';
+      let builder = CY.loader();
+      if (licKey) builder = builder.licenseKey(licKey);
+      else console.warn('未提供 MorphCast license key，SDK 可能无法初始化 (E07)。可在 LICENSE_KEY 填入，或用 ?key= / localStorage 设置。');
+
+      await builder
+        .addModule(CY.modules().FACE_DETECTOR.name) // 先加检测器
+        .addModule(CY.modules().FACE_AROUSAL_VALENCE.name, { smoothness: 0.7 })
+        .addModule(CY.modules().FACE_EMOTION.name, { smoothness: 0.4 }) // 添加情绪检测
+        .source(customSource)
+        .load()
+        .catch((e) => { console.error('SDK 初始化失败', e); throw e; })
+        .then((result) => { 
+          sdkInstance = result; // 保存SDK实例
+          window.currentCYInstance = result; // 也保存到全局变量用于重新初始化
+          return result.start(); 
+        });
+
+      // 修正 FACE_DETECTOR 事件监听器
+      window.addEventListener(CY.modules().FACE_DETECTOR.eventName, evt => {
+        const detail = evt.detail || {};
+        
+        // 根据文档，直接使用 totalFaces 字段（范围 [0,6]）
+        const totalFaces = detail.totalFaces || 0;
+        currentFrameHasFace = totalFaces > 0;
+        
+        // 调试输出：显示检测结果
+        console.log(`Face Detection: ${totalFaces} faces detected at time ${(lastCaptureTime || video.currentTime).toFixed(2)}s`);
+        
+        // 无论有无脸部，都记录一个数据点（用于标记无脸区域）
+        const t = lastCaptureTime || video.currentTime;
+        if (!currentFrameHasFace) {
+          // 无脸时直接记录（VA事件不会触发）
+          dataLog.push({ 
+            time: t, 
+            arousal: NaN, 
+            valence: NaN, 
+            face: false
+          });
+        }
+      });
+
+      // VA 输出：只有检测到脸部时才会触发
+      window.addEventListener(CY.modules().FACE_AROUSAL_VALENCE.eventName, evt => {
+        const out = evt.detail.output;
+        const t = lastCaptureTime || video.currentTime;
+        
+        // 调试输出：显示VA检测结果
+        console.log(`VA Detection: arousal=${out.arousal.toFixed(3)}, valence=${out.valence.toFixed(3)} at time ${t.toFixed(2)}s`);
+        
+        // 查找或创建当前时间的数据记录
+        let dataRecord = dataLog.find(r => Math.abs(r.time - t) < 0.01);
+        if (!dataRecord) {
+          dataRecord = { 
+            time: t, 
+            arousal: out.arousal, 
+            valence: out.valence, 
+            face: true,
+            emotions: {},
+            dominantEmotion: undefined
+          };
+          dataLog.push(dataRecord);
+        } else {
+          dataRecord.arousal = out.arousal;
+          dataRecord.valence = out.valence;
+          dataRecord.face = true;
+        }
+      });
+
+      // 情绪检测输出
+      window.addEventListener(CY.modules().FACE_EMOTION.eventName, evt => {
+        if (!emotionDetectionEnabled) return;
+        
+        const out = evt.detail.output;
+        const t = lastCaptureTime || video.currentTime;
+        
+        // 调试输出：显示情绪检测结果
+        console.log(`Emotion Detection at time ${t.toFixed(2)}s:`, out);
+        
+        // 查找或创建当前时间的数据记录
+        let dataRecord = dataLog.find(r => Math.abs(r.time - t) < 0.01);
+        if (!dataRecord) {
+          dataRecord = { 
+            time: t, 
+            arousal: NaN, 
+            valence: NaN, 
+            face: true,
+            emotions: out.emotion,
+            dominantEmotion: out.dominantEmotion
+          };
+          dataLog.push(dataRecord);
+        } else {
+          dataRecord.emotions = out.emotion;
+          dataRecord.dominantEmotion = out.dominantEmotion;
+          dataRecord.face = true;
+        }
+      });
+    }
+
+    // 获取用户配置的检测区域
+    function getDetectionRegion() {
+      const overlay = document.getElementById('regionOverlay');
+      
+      // 如果区域检测未启用，返回全屏
+      if (overlay.style.display === 'none' || overlay.style.display === '') {
+        return {
+          x: 0,
+          y: 0,
+          width: video.videoWidth,
+          height: video.videoHeight
+        };
+      }
+      
+      // 从覆盖层获取区域信息
+      const scaleX = video.videoWidth / video.clientWidth;
+      const scaleY = video.videoHeight / video.clientHeight;
+      
+      // 直接从style属性获取位置和尺寸
+      const overlayLeft = parseInt(overlay.style.left) || 0;
+      const overlayTop = parseInt(overlay.style.top) || 0;
+      const overlayWidth = parseInt(overlay.style.width) || 0;
+      const overlayHeight = parseInt(overlay.style.height) || 0;
+      
+      const region = {
+        x: Math.floor(overlayLeft * scaleX),
+        y: Math.floor(overlayTop * scaleY),
+        width: Math.floor(overlayWidth * scaleX),
+        height: Math.floor(overlayHeight * scaleY)
+      };
+      
+      // 边界检查
+      region.x = Math.max(0, Math.min(region.x, video.videoWidth - 1));
+      region.y = Math.max(0, Math.min(region.y, video.videoHeight - 1));
+      region.width = Math.max(1, Math.min(region.width, video.videoWidth - region.x));
+      region.height = Math.max(1, Math.min(region.height, video.videoHeight - region.y));
+      
+      return region;
+    }
+
+    // 区域检测功能
+    let regionEnabled = false;
+
+    function toggleRegion() {
+      // 如果已经分析过，或者SDK已经初始化，则刷新页面
+      if (analyzed || loaderStarted || sdkInstance) {
+        console.log('检测到SDK状态，刷新页面以重置...');
+        location.reload();
+        return;
+      }
+      
+      const overlay = document.getElementById('regionOverlay');
+      const handle = document.getElementById('dragHandle');
+      const btn = document.getElementById('toggleRegion');
+      const info = document.getElementById('regionInfo');
+      
+      regionEnabled = !regionEnabled;
+      
+      if (regionEnabled) {
+        // 启用区域检测
+        btn.textContent = '禁用区域检测';
+        info.textContent = '拖拽红框移动位置，拖拽右下角红点调整大小';
+        info.style.color = '#4caf50';
+        
+        // 确保视频已加载
+        if (!video.videoWidth || !video.videoHeight) {
+          alert('请等待视频加载完成后再启用区域检测');
+          regionEnabled = false;
+          btn.textContent = '启用区域检测';
+          info.textContent = '点击启用后可在视频上拖拽选择检测区域';
+          info.style.color = '#ccc';
+          return;
+        }
+        
+        // 显示默认区域（视频中心50%x60%）
+        const videoRect = video.getBoundingClientRect();
+        const defaultWidth = Math.floor(videoRect.width * 0.5);
+        const defaultHeight = Math.floor(videoRect.height * 0.6);
+        const defaultLeft = Math.floor(videoRect.width * 0.25);
+        const defaultTop = Math.floor(videoRect.height * 0.1);
+        
+        overlay.style.display = 'block';
+        overlay.style.left = defaultLeft + 'px';
+        overlay.style.top = defaultTop + 'px';
+        overlay.style.width = defaultWidth + 'px';
+        overlay.style.height = defaultHeight + 'px';
+        overlay.style.pointerEvents = 'auto';
+        overlay.style.cursor = 'move';
+        
+        handle.style.display = 'block';
+        handle.style.left = (defaultLeft + defaultWidth - 6) + 'px';
+        handle.style.top = (defaultTop + defaultHeight - 6) + 'px';
+        handle.style.cursor = 'se-resize';
+        
+        // 输出初始区域信息
+        setTimeout(() => {
+          const region = getDetectionRegion();
+          console.log('区域检测已启用，初始区域:');
+          console.log(`  视频尺寸: ${video.videoWidth}x${video.videoHeight}`);
+          console.log(`  检测区域: ${region.x}x${region.y} ${region.width}x${region.height}`);
+          console.log(`  覆盖率: ${((region.width * region.height) / (video.videoWidth * video.videoHeight) * 100).toFixed(1)}%`);
+          
+          info.textContent = `检测区域: ${region.width}x${region.height} (${((region.width * region.height) / (video.videoWidth * video.videoHeight) * 100).toFixed(1)}% 覆盖)`;
+        }, 100);
+        
+      } else {
+        // 禁用区域检测
+        btn.textContent = '启用区域检测';
+        info.textContent = '点击启用后可在视频上拖拽选择检测区域';
+        info.style.color = '#ccc';
+        
+        overlay.style.display = 'none';
+        handle.style.display = 'none';
+        overlay.style.pointerEvents = 'none';
+        
+        console.log('区域检测已禁用，将使用全屏检测');
+      }
+    }
+
+    // 初始化区域拖拽功能
+    function initRegionDragHandlers() {
+      const overlay = document.getElementById('regionOverlay');
+      const handle = document.getElementById('dragHandle');
+      
+      let isDraggingOverlay = false;
+      let isDraggingHandle = false;
+      let startX, startY, startLeft, startTop, startWidth, startHeight;
+      
+      // 覆盖层拖拽（移动位置）
+      overlay.addEventListener('mousedown', (e) => {
+        if (!regionEnabled) return;
+        
+        isDraggingOverlay = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        startLeft = parseInt(overlay.style.left) || 0;
+        startTop = parseInt(overlay.style.top) || 0;
+        
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      
+      // 拖拽控制点（调整大小）
+      handle.addEventListener('mousedown', (e) => {
+        if (!regionEnabled) return;
+        
+        isDraggingHandle = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        startWidth = parseInt(overlay.style.width) || 0;
+        startHeight = parseInt(overlay.style.height) || 0;
+        startLeft = parseInt(overlay.style.left) || 0;
+        startTop = parseInt(overlay.style.top) || 0;
+        
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      
+      // 鼠标移动事件
+      document.addEventListener('mousemove', (e) => {
+        if (!regionEnabled) return;
+        
+        const videoRect = video.getBoundingClientRect();
+        
+        if (isDraggingOverlay) {
+          const deltaX = e.clientX - startX;
+          const deltaY = e.clientY - startY;
+          
+          let newLeft = startLeft + deltaX;
+          let newTop = startTop + deltaY;
+          
+          // 边界限制
+          const overlayWidth = parseInt(overlay.style.width) || 0;
+          const overlayHeight = parseInt(overlay.style.height) || 0;
+          
+          newLeft = Math.max(0, Math.min(newLeft, videoRect.width - overlayWidth));
+          newTop = Math.max(0, Math.min(newTop, videoRect.height - overlayHeight));
+          
+          overlay.style.left = newLeft + 'px';
+          overlay.style.top = newTop + 'px';
+          
+          // 更新拖拽控制点位置
+          updateHandlePosition();
+          
+          e.preventDefault();
+        }
+        
+        if (isDraggingHandle) {
+          const deltaX = e.clientX - startX;
+          const deltaY = e.clientY - startY;
+          
+          let newWidth = startWidth + deltaX;
+          let newHeight = startHeight + deltaY;
+          
+          // 最小尺寸限制
+          newWidth = Math.max(50, newWidth);
+          newHeight = Math.max(50, newHeight);
+          
+          // 边界限制
+          const currentLeft = parseInt(overlay.style.left) || 0;
+          const currentTop = parseInt(overlay.style.top) || 0;
+          
+          newWidth = Math.min(newWidth, videoRect.width - currentLeft);
+          newHeight = Math.min(newHeight, videoRect.height - currentTop);
+          
+          overlay.style.width = newWidth + 'px';
+          overlay.style.height = newHeight + 'px';
+          
+          // 更新拖拽控制点位置
+          updateHandlePosition();
+          
+          e.preventDefault();
+        }
+      });
+      
+      // 鼠标释放事件
+      document.addEventListener('mouseup', () => {
+        if (isDraggingOverlay || isDraggingHandle) {
+          isDraggingOverlay = false;
+          isDraggingHandle = false;
+          
+          // 输出当前区域信息
+          logCurrentRegion();
+        }
+      });
+      
+      // 更新拖拽控制点位置
+      function updateHandlePosition() {
+        const overlayLeft = parseInt(overlay.style.left) || 0;
+        const overlayTop = parseInt(overlay.style.top) || 0;
+        const overlayWidth = parseInt(overlay.style.width) || 0;
+        const overlayHeight = parseInt(overlay.style.height) || 0;
+        
+        handle.style.left = (overlayLeft + overlayWidth - 6) + 'px';
+        handle.style.top = (overlayTop + overlayHeight - 6) + 'px';
+      }
+      
+      // 输出当前区域信息
+      function logCurrentRegion() {
+        const region = getDetectionRegion();
+        const videoRect = video.getBoundingClientRect();
+        
+        console.log('检测区域已更新:');
+        console.log(`  显示区域: ${parseInt(overlay.style.left)}x${parseInt(overlay.style.top)} ${parseInt(overlay.style.width)}x${parseInt(overlay.style.height)}`);
+        console.log(`  视频坐标: ${region.x}x${region.y} ${region.width}x${region.height}`);
+        console.log(`  覆盖率: ${((region.width * region.height) / (video.videoWidth * video.videoHeight) * 100).toFixed(1)}%`);
+        
+        // 更新信息显示
+        const info = document.getElementById('regionInfo');
+        info.textContent = `检测区域: ${region.width}x${region.height} (${((region.width * region.height) / (video.videoWidth * video.videoHeight) * 100).toFixed(1)}% 覆盖)`;
+      }
+    }
+
+    function waitForVideoReady(v) {
+      return new Promise(res => {
+        if (v.videoWidth && v.videoHeight) return res();
+        const tm = setInterval(() => {
+          if (v.videoWidth && v.videoHeight) { clearInterval(tm); res(); }
+        }, 100);
+      });
+    }
+
+    // DeepFace API 调用函数
+    async function analyzeFrameWithDeepFace(canvas) {
+      try {
+        // 将 canvas 转换为 base64
+        const dataURL = canvas.toDataURL('image/jpeg', 0.8);
+        
+        // 调用 DeepFace API
+        const response = await fetch(`${deepfaceApiUrl}/analyze`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            img: dataURL,
+            enforce_detection: false
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error(`DeepFace API 错误: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        
+        if (result.status === 'success' && result.face) {
+          return {
+            valence: result.valence_arousal.valence,
+            arousal: result.valence_arousal.arousal,
+            emotions: result.emotions,
+            dominant_emotion: result.dominant_emotion,
+            face: true
+          };
+        } else {
+          console.warn('DeepFace 分析失败:', result.message || '未检测到面部');
+          return { face: false };
+        }
+      } catch (error) {
+        console.error('DeepFace API 调用失败:', error);
+        return { face: false };
+      }
+    }
+
+    // 统一的帧分析函数
+    async function analyzeFrame(imgData, canvas) {
+      if (currentAPI === 'deepface') {
+        return await analyzeFrameWithDeepFace(canvas);
+      } else {
+        // 使用 MorphCast
+        customSource.analyzeFrame(imgData);
+        return null; // MorphCast 通过事件异步返回结果
+      }
+    }
+
+    // —— 阶段 1：预处理 —— //
+    analyzeBtn.onclick = async () => {
+      // 检查是否已选择视频
+      if (!videoSelected || !video.src) {
+        alert('请先选择视频文件');
+        return;
+      }
+      
+      // 检查 API 连接状态
+      if (!apiConnected) {
+        alert(`${currentAPI === 'deepface' ? 'DeepFace' : 'MorphCast'} API 未连接，请检查服务状态`);
+        return;
+      }
+      
+      // 立即禁用按钮，防止重复点击
+      analyzeBtn.disabled = true;
+      analyzeBtn.textContent = '处理中...';
+      
+      // 只有 MorphCast 需要加载 SDK
+      if (currentAPI === 'morphcast') {
+        await ensureLoader();
+      }
+      analyzed = false;
+      dataLog = [];
+      chart.reset();
+      statusEl.textContent = 'Analyzing...';
+
+      await waitForVideoReady(video);
+
+      const oldRate = video.playbackRate;
+      const oldControls = video.controls;
+      const oldCurrentTime = video.currentTime;
+      video.muted = true;
+      video.controls = false;
+      video.playbackRate = 1.0;
+
+      // 真正的按帧抓取模式：基于帧序号计算精确时间
+      const duration = video.duration;
+      const everyN = parseInt(frameIntervalInput.value) || 10; // 从用户输入获取抽帧间隔，默认10帧
+      
+      // 尝试获取视频真实帧率，如果获取不到则抛出错误
+      let fps = null;
+      let fpsDetected = false;
+      
+      try {
+        // 方法1：通过videoTracks API获取帧率
+        if (video.videoTracks && video.videoTracks.length > 0) {
+          const track = video.videoTracks[0];
+          if (track.frameRate) {
+            fps = track.frameRate;
+            fpsDetected = true;
+            console.log(`从videoTracks获取帧率: ${fps}fps`);
+          }
+        }
+        // 方法2：通过captureStream API估算（备用）
+        if (!fpsDetected && video.captureStream) {
+          try {
+            const stream = video.captureStream();
+            const videoTrack = stream.getVideoTracks()[0];
+            const settings = videoTrack.getSettings();
+            if (settings.frameRate) {
+              fps = settings.frameRate;
+              fpsDetected = true;
+              console.log(`从captureStream获取帧率: ${fps}fps`);
+            }
+          } catch (e) {
+            // 忽略captureStream错误
+          }
+        }
+        // 如果都获取不到，抛出错误
+        if (!fpsDetected) {
+          throw new Error('无法获取视频帧率，请检查视频文件');
+        }
+      } catch (e) {
+        console.error('获取视频帧率失败:', e);
+        alert('无法获取视频帧率，分析可能不准确。建议尝试其他视频文件。');
+        // 使用一个保守的默认值，但要明确告知用户
+        fps = 25;
+        console.warn(`使用保守默认帧率: ${fps}fps`);
+      }
+      
+      // 计算视频总帧数和要处理的帧序号
+      const totalVideoFrames = Math.floor(duration * fps);
+      const frameNumbers = [];
+      for (let frameNum = 0; frameNum < totalVideoFrames; frameNum += everyN) {
+        frameNumbers.push(frameNum);
+      }
+      
+      console.log(`开始预处理：视频时长 ${duration.toFixed(1)}s，${fps}fps，总帧数 ${totalVideoFrames}，每${everyN}帧抓一帧，需处理 ${frameNumbers.length} 帧`);
+      console.log(`处理帧序号: [${frameNumbers.slice(0, 5).join(', ')}${frameNumbers.length > 5 ? '...' : ''}]`);
+      
+      let frameCount = 0;
+      const startTime = performance.now();
+
+      // 预处理函数：直接跳转到指定帧的精确时间
+      const processFrame = (frameNumber) => {
+        return new Promise((resolve) => {
+          const exactTime = frameNumber / fps; // 精确的帧时间戳
+          
+          const onSeeked = async () => {
+            video.removeEventListener('seeked', onSeeked);
+            
+            // 抓取当前帧（使用区域检测）
+            lastCaptureTime = exactTime; // 使用计算出的精确时间，不是video.currentTime
+            
+            console.log(`🎯 Processing frame ${frameNumber} at time ${exactTime.toFixed(3)}s`);
+            
+            // 每次都重新获取区域配置，确保使用最新状态
+            const region = getDetectionRegion();
+            
+            // 每次都重新调整canvas尺寸以匹配当前区域设置
+            grabCanvas.width = region.width;
+            grabCanvas.height = region.height;
+            
+            // 清空canvas确保干净绘制
+            grabCtx.clearRect(0, 0, grabCanvas.width, grabCanvas.height);
+            
+            // 只绘制指定区域
+            grabCtx.drawImage(
+              video,                          // 源视频
+              region.x,                       // 源x坐标
+              region.y,                       // 源y坐标
+              region.width,                   // 源宽度
+              region.height,                  // 源高度
+              0,                              // 目标x（canvas左上角）
+              0,                              // 目标y（canvas左上角）
+              region.width,                   // 目标宽度
+              region.height                   // 目标高度
+            );
+            
+            const imgData = grabCtx.getImageData(0, 0, grabCanvas.width, grabCanvas.height);
+            
+            // 根据选择的 API 进行分析
+            if (currentAPI === 'deepface') {
+              const result = await analyzeFrame(imgData, grabCanvas);
+              if (result && result.face) {
+                // 直接添加到数据日志中
+                const dataPoint = {
+                  time: exactTime,
+                  valence: result.valence,
+                  arousal: result.arousal,
+                  face: true
+                };
+                
+                // 如果启用了情绪检测，添加情绪数据
+                if (emotionDetectionEnabled && result.emotions) {
+                  dataPoint.emotions = result.emotions;
+                  dataPoint.dominantEmotion = result.dominant_emotion;
+                  
+                  // 添加7种基础情绪数据
+                  Object.assign(dataPoint, result.emotions);
+                }
+                
+                dataLog.push(dataPoint);
+                console.log(`DeepFace 结果 @${exactTime.toFixed(3)}s:`, result);
+              } else {
+                dataLog.push({ time: exactTime, face: false });
+              }
+            } else {
+              // 使用 MorphCast
+              customSource.analyzeFrame(imgData);
+            }
+            
+            frameCount++;
+            const progress = ((frameCount / frameNumbers.length) * 100).toFixed(1);
+            statusEl.textContent = `分析中... ${progress}% (${frameCount}/${frameNumbers.length}) - 帧${frameNumber}/${totalVideoFrames}@${exactTime.toFixed(3)}s [${fps}fps]`;
+            
+            resolve();
+          };
+          
+          video.addEventListener('seeked', onSeeked);
+          video.currentTime = exactTime;
+        });
+      };
+
+      // 逐帧处理：按帧序号顺序处理
+      try {
+        for (const frameNumber of frameNumbers) {
+          await processFrame(frameNumber);
+          
+          // 给SDK一点时间处理（可选，避免过快）
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+
+        // 处理完成，整理数据
+        dataLog.sort((a, b) => a.time - b.time);
+        const clean = [];
+        let prev = -Infinity;
+        for (const r of dataLog) {
+          const hasVA = isFinite(r.arousal) && isFinite(r.valence);
+          const hasFaceInfo = typeof r.face === 'boolean';
+          if (r.time >= prev && (hasVA || hasFaceInfo)) {
+            clean.push(r);
+            prev = r.time;
+          }
+        }
+        dataLog = clean;
+
+        // 保存原始数据
+        originalDataLog = dataLog.map(r => ({ ...r }));
+
+        analyzed = true;
+        statusEl.textContent = `分析完成！共 ${dataLog.length} 点，用时: ${((performance.now() - startTime) / 1000).toFixed(1)}s`;
+        downloadBtn.disabled = dataLog.length === 0;
+        
+        // 保持分析按钮永久禁用，防止重复分析
+        analyzeBtn.disabled = true;
+        analyzeBtn.textContent = '已完成分析';
+
+        // 停止自定义帧源和SDK实例
+        console.log('停止帧源处理...');
+        customSource.stop();
+        
+        // 停止SDK实例，释放资源
+        if (sdkInstance) {
+          try {
+            sdkInstance.stop();
+            console.log('SDK实例已停止');
+          } catch (e) {
+            console.warn('停止SDK时出错:', e);
+          }
+          sdkInstance = null;
+        }
+        
+        // 重置loader状态，以便下次重新初始化
+        loaderStarted = false;
+        console.log('分析完成，SDK已关闭');
+
+        // 加载数据到图表
+        loadAllDataToChart();
+
+      } catch (error) {
+        console.error('预处理出错:', error);
+        statusEl.textContent = '分析失败';
+        // 即使出错也保持按钮禁用，防止重复尝试
+        analyzeBtn.disabled = true;
+        analyzeBtn.textContent = '分析失败';
+      } finally {
+        // 恢复视频状态
+        video.playbackRate = oldRate;
+        video.controls = oldControls;
+        video.muted = false;
+        video.currentTime = oldCurrentTime;
+      }
+    };
+
+    // —— 导出 XDF —— //
+    downloadBtn.onclick = () => {
+      if (dataLog.length === 0) { alert('没有可导出的数据'); return; }
+      
+      try {
+        // 使用XDF格式处理器导出
+        const xdfData = xdfFormatter.exportToXDF(dataLog, emotionDetectionEnabled, emotionNames);
+        
+        const xdfContent = JSON.stringify(xdfData, null, 2);
+        const blob = new Blob([xdfContent], { type: 'application/json;charset=utf-8;' });
+        
+        // 创建下载链接
+        const a = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        a.href = url;
+        const timestamp = new Date().toISOString().slice(0,16).replace(/[:-]/g,'');
+        const filename = `emotion_analysis_${timestamp}.xdf`;
+        a.download = filename;
+        a.style.display = 'none';
+        
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        
+        console.log(`XDF数据已导出: ${filename}`);
+        statusEl.textContent += ` | XDF已导出：${dataLog.length}个数据点`;
+        
+      } catch (error) {
+        console.error('XDF export failed:', error);
+        alert('XDF 导出失败：' + error.message);
+      }
+    };
+
+    // —— 导入 XDF 回放 —— //
+    importBtn.onclick = () => xdfInput.click();
+
+    // —— 区域检测切换 —— //
+    const toggleBtn = document.getElementById('toggleRegion');
+    toggleBtn.onclick = () => toggleRegion();
+
+    // 添加键盘快捷键支持
+    document.addEventListener('keydown', (e) => {
+      if (!regionEnabled) return;
+      
+      const overlay = document.getElementById('regionOverlay');
+      const handle = document.getElementById('dragHandle');
+      const step = e.shiftKey ? 10 : 1; // Shift键加速移动
+      
+      let currentLeft = parseInt(overlay.style.left) || 0;
+      let currentTop = parseInt(overlay.style.top) || 0;
+      let currentWidth = parseInt(overlay.style.width) || 0;
+      let currentHeight = parseInt(overlay.style.height) || 0;
+      
+      const videoRect = video.getBoundingClientRect();
+      
+      switch(e.key) {
+        case 'ArrowLeft':
+          currentLeft = Math.max(0, currentLeft - step);
+          overlay.style.left = currentLeft + 'px';
+          e.preventDefault();
+          break;
+        case 'ArrowRight':
+          currentLeft = Math.min(videoRect.width - currentWidth, currentLeft + step);
+          overlay.style.left = currentLeft + 'px';
+          e.preventDefault();
+          break;
+        case 'ArrowUp':
+          currentTop = Math.max(0, currentTop - step);
+          overlay.style.top = currentTop + 'px';
+          e.preventDefault();
+          break;
+        case 'ArrowDown':
+          currentTop = Math.min(videoRect.height - currentHeight, currentTop + step);
+          overlay.style.top = currentTop + 'px';
+          e.preventDefault();
+          break;
+        case '+':
+        case '=':
+          // 放大区域
+          const newWidth = Math.min(videoRect.width - currentLeft, currentWidth + step * 5);
+          const newHeight = Math.min(videoRect.height - currentTop, currentHeight + step * 5);
+          overlay.style.width = newWidth + 'px';
+          overlay.style.height = newHeight + 'px';
+          e.preventDefault();
+          break;
+        case '-':
+          // 缩小区域
+          const minSize = 50;
+          overlay.style.width = Math.max(minSize, currentWidth - step * 5) + 'px';
+          overlay.style.height = Math.max(minSize, currentHeight - step * 5) + 'px';
+          e.preventDefault();
+          break;
+      }
+      
+      // 更新拖拽控制点位置
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '+', '=', '-'].includes(e.key)) {
+        const newLeft = parseInt(overlay.style.left) || 0;
+        const newTop = parseInt(overlay.style.top) || 0;
+        const newWidth = parseInt(overlay.style.width) || 0;
+        const newHeight = parseInt(overlay.style.height) || 0;
+        
+        handle.style.left = (newLeft + newWidth - 6) + 'px';
+        handle.style.top = (newTop + newHeight - 6) + 'px';
+        
+        // 输出区域信息
+        const region = getDetectionRegion();
+        const info = document.getElementById('regionInfo');
+        info.textContent = `检测区域: ${region.width}x${region.height} (${((region.width * region.height) / (video.videoWidth * video.videoHeight) * 100).toFixed(1)}% 覆盖)`;
+      }
+    });
+
+    // 确保数据完整性
+    function loadAllDataToChart() {
+      const valenceData = [];
+      const arousalData = [];
+      const noFaceData = [];
+
+      for (const r of dataLog) {
+        if (r.face) {
+          // 只有当值是有限数字时才添加到对应的数据集
+          if (isFinite(r.valence)) valenceData.push({ x: r.time, y: r.valence });
+          if (isFinite(r.arousal)) arousalData.push({ x: r.time, y: r.arousal });
+        } else {
+          noFaceData.push({ x: r.time, y: 1 });
+        }
+      }
+
+      chart._datasets[0].data = valenceData;
+      chart._datasets[1].data = arousalData;
+      chart._datasets[2].data = noFaceData;
+      
+      chart._chart.update();
+      
+      // 加载情绪数据到情绪图表
+      if (emotionChart && emotionDetectionEnabled) {
+        loadEmotionDataToChart();
+      }
+    }
+
+    // 加载情绪数据到情绪图表
+    function loadEmotionDataToChart() {
+      // 初始化每个情绪的数据数组
+      emotionNames.forEach((emotion, index) => {
+        emotionChart.data.datasets[index].data = [];
+      });
+
+      // 填充情绪数据
+      for (const r of dataLog) {
+        if (r.face && r.emotions) {
+          emotionNames.forEach((emotion, index) => {
+            if (r.emotions[emotion] !== undefined) {
+              emotionChart.data.datasets[index].data.push({ 
+                x: r.time, 
+                y: r.emotions[emotion] 
+              });
+            }
+          });
+        }
+      }
+
+      // 同步时间轴范围
+      const vaXAxis = chart._config.options.scales.xAxes[0];
+      emotionChart.options.scales.xAxes[0].ticks.min = vaXAxis.ticks.min;
+      emotionChart.options.scales.xAxes[0].ticks.max = vaXAxis.ticks.max;
+      
+      emotionChart.update();
+    }
+
+    // 更新当前情绪显示
+    function updateCurrentEmotionDisplay(currentTime) {
+      // 查找最接近当前时间的情绪数据
+      let closestRecord = null;
+      let minTimeDiff = Infinity;
+      
+      for (const record of dataLog) {
+        if (record.face && record.emotions) {
+          const timeDiff = Math.abs(record.time - currentTime);
+          if (timeDiff < minTimeDiff) {
+            minTimeDiff = timeDiff;
+            closestRecord = record;
+          }
+        }
+      }
+      
+      const currentEmotionDisplay = document.getElementById('currentEmotionDisplay');
+      
+      if (closestRecord && minTimeDiff < 0.5) { // 0.5秒容差
+        // 显示主导情绪
+        const dominantEmotion = closestRecord.dominantEmotion || 'Unknown';
+        let emotionValue = 0;
+        
+        if (closestRecord.emotions && closestRecord.emotions[dominantEmotion]) {
+          emotionValue = closestRecord.emotions[dominantEmotion];
+          // DeepFace返回0-100的值，确保显示为百分比
+          if (emotionValue > 1) {
+            emotionValue = emotionValue; // 已经是0-100
+          } else {
+            emotionValue = emotionValue * 100; // 如果是0-1，转换为0-100
+          }
+        }
+        
+        currentEmotionDisplay.innerHTML = `
+          <strong>${dominantEmotion}</strong> (${emotionValue.toFixed(1)}%)
+        `;
+      } else {
+        currentEmotionDisplay.innerHTML = '<span class="muted">无数据</span>';
+      }
+    }
+
+    // 数据处理函数
+    function calculateDataMeans() {
+      const valenceValues = [];
+      const arousalValues = [];
+      
+      for (const r of dataLog) {
+        if (r.face && isFinite(r.valence) && isFinite(r.arousal)) {
+          valenceValues.push(r.valence);
+          arousalValues.push(r.arousal);
+        }
+      }
+      
+      const valenceMean = valenceValues.length > 0 ? 
+        valenceValues.reduce((sum, val) => sum + val, 0) / valenceValues.length : 0;
+      const arousalMean = arousalValues.length > 0 ? 
+        arousalValues.reduce((sum, val) => sum + val, 0) / arousalValues.length : 0;
+        
+      return { valenceMean, arousalMean };
+    }
+
+    function resetDataProcessing() {
+      if (originalDataLog.length === 0) {
+        alert('没有原始数据可恢复');
+        return;
+      }
+      
+      // 恢复原始数据
+      dataLog = originalDataLog.map(r => ({ ...r }));
+      
+      // 重置状态
+      valenceOffset = 0;
+      arousalOffset = 0;
+      
+      loadAllDataToChart();
+      updateDataProcessingStatus();
+      
+      console.log('数据处理已重置到原始状态');
+    }
+
+    function updateDataProcessingStatus() {
+      const statusEl = document.getElementById('dataProcessingStatus');
+      statusEl.textContent = '数据处理状态：正常显示';
+    }
+
+    // 应用自定义时间范围
+    const applyWindowBtn = document.getElementById('applyWindow');
+    applyWindowBtn.onclick = () => {
+      const startInput = document.getElementById('windowStart');
+      const endInput = document.getElementById('windowEnd');
+
+      const start = parseFloat(startInput.value);
+      const end = parseFloat(endInput.value);
+
+      if (!isFinite(start) || !isFinite(end) || start >= end) {
+        alert('请输入有效的起点和终点时间');
+        return;
+      }
+
+      // 同时设置V/A图表和情绪图表的时间范围
+      chart.setViewRange(start, end);
+      
+      // 同步设置情绪图表的时间范围
+      if (emotionChart && emotionDetectionEnabled) {
+        emotionChart.options.scales.xAxes[0].ticks.min = start;
+        emotionChart.options.scales.xAxes[0].ticks.max = end;
+        emotionChart.update();
+      }
+    };
+
+    // XDF 导入逻辑
+    xdfInput.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const xdfData = JSON.parse(reader.result);
+          
+          // 使用XDF格式处理器导入数据
+          const importedData = xdfFormatter.importFromXDF(xdfData);
+          
+          // 更新数据
+          dataLog = importedData;
+          originalDataLog = importedData.map(r => ({ ...r }));
+          processedDataLog = importedData.map(r => ({ ...r }));
+          
+          console.log('导入的前5个XDF数据点：', dataLog.slice(0, 5));
+          
+          // 检查是否包含情绪数据
+          const hasEmotionData = dataLog.some(r => r.emotions);
+          if (hasEmotionData && !emotionDetectionEnabled) {
+            emotionDetectionEnabled = true;
+            document.getElementById('emotionToggle').checked = true;
+            toggleEmotionDetection();
+          }
+          
+          loadAllDataToChart();
+          statusEl.textContent = `XDF 导入成功：${dataLog.length} 点${hasEmotionData ? '（包含情绪数据）' : ''}`;
+          
+          // 显示Rate-of-Change处理面板
+          document.getElementById('rocProcessingPanel').style.display = 'block';
+          updateProcessingStatus('step0', false, 'XDF已导入，可开始数据处理');
+          
+        } catch (error) {
+          console.error('XDF import failed:', error);
+          alert('XDF 导入失败：' + error.message);
+        }
+      };
+      reader.readAsText(file);
+    };
+
+    // 点击标记点跳转视频
+    chartCanvas.addEventListener('click', (evt) => {
+      const t = chart.getTimeAtEvent(evt);
+      if (t == null || !isFinite(t)) return;
+      video.currentTime = Math.max(0, t);
+      chart.updatePlaybackMarker(t);
+    });
+
+    // 修复播放时 Chart 显示问题
+    video.addEventListener('timeupdate', () => {
+      const t = video.currentTime;
+      chart.updatePlaybackMarker(t);
+      
+      // 更新情绪显示（如果情绪检测启用）
+      if (emotionDetectionEnabled) {
+        updateCurrentEmotionDisplay(t);
+      }
+    });
+
+    // 情绪图表点击跳转视频时间
+    document.addEventListener('DOMContentLoaded', () => {
+      // 初始化 API 状态
+      apiConnected = true; // MorphCast 默认可用
+      updateApiStatus('MorphCast 已选择');
+      
+      // 初始化区域拖拽功能
+      initRegionDragHandlers();
+      
+      const emotionCanvas = document.getElementById('emotionChart');
+      if (emotionCanvas) {
+        emotionCanvas.addEventListener('click', (evt) => {
+          if (!emotionChart || !emotionDetectionEnabled) return;
+          
+          // 获取点击位置的时间
+          const canvasPosition = Chart.helpers.getRelativePosition(evt, emotionChart);
+          const dataX = emotionChart.scales['x-axis-0'].getValueForPixel(canvasPosition.x);
+          
+          if (dataX != null && isFinite(dataX)) {
+            video.currentTime = Math.max(0, dataX);
+            chart.updatePlaybackMarker(dataX);
+            updateCurrentEmotionDisplay(dataX);
+          }
+        });
+      }
+    });
+
+    // =================== Rate-of-Change 处理步骤事件监听器 ===================
+    
+    // 步骤0: 基础整理
+    document.getElementById('sortDataBtn').addEventListener('click', () => {
+      if (originalDataLog.length === 0) {
+        alert('请先导入CSV数据');
+        return;
+      }
+      
+      // 时间对齐和去重
+      processedDataLog.sort((a, b) => a.time - b.time);
+      const uniqueData = [];
+      let lastTime = -Infinity;
+      
+      for (const record of processedDataLog) {
+        if (record.time > lastTime + 0.001) { // 1ms容差
+          uniqueData.push({ ...record });
+          lastTime = record.time;
+        }
+      }
+      
+      processedDataLog = uniqueData;
+      dataLog = processedDataLog.map(r => ({ ...r }));
+      loadAllDataToChart();
+      
+      updateProcessingStatus('step0', true, `时间对齐完成，保留${processedDataLog.length}个数据点`);
+    });
+    
+    document.getElementById('resampleBtn').addEventListener('click', () => {
+      if (processedDataLog.length === 0) {
+        alert('请先进行时间对齐');
+        return;
+      }
+      
+      // 重采样到5Hz (200ms间隔)
+      const startTime = processedDataLog[0].time;
+      const endTime = processedDataLog[processedDataLog.length - 1].time;
+      const interval = 0.2; // 200ms
+      const newData = [];
+      
+      for (let t = startTime; t <= endTime; t += interval) {
+        // 找到最近的有效数据点进行插值
+        let beforeIdx = -1, afterIdx = -1;
+        
+        for (let i = 0; i < processedDataLog.length; i++) {
+          if (processedDataLog[i].face && processedDataLog[i].time <= t) {
+            beforeIdx = i;
+          }
+          if (processedDataLog[i].face && processedDataLog[i].time >= t && afterIdx === -1) {
+            afterIdx = i;
+            break;
+          }
+        }
+        
+        if (beforeIdx !== -1 && afterIdx !== -1 && beforeIdx !== afterIdx) {
+          const before = processedDataLog[beforeIdx];
+          const after = processedDataLog[afterIdx];
+          const ratio = (t - before.time) / (after.time - before.time);
+          
+          newData.push({
+            time: t,
+            valence: before.valence + ratio * (after.valence - before.valence),
+            arousal: before.arousal + ratio * (after.arousal - before.arousal),
+            face: true
+          });
+        } else if (beforeIdx !== -1) {
+          const record = processedDataLog[beforeIdx];
+          if (Math.abs(record.time - t) < 0.1) { // 100ms容差
+            newData.push({ ...record, time: t });
+          }
+        }
+      }
+      
+      processedDataLog = newData;
+      dataLog = processedDataLog.map(r => ({ ...r }));
+      loadAllDataToChart();
+      
+      updateProcessingStatus('step0', true, `重采样完成，${newData.length}个数据点@5Hz`);
+    });
+    
+    // 步骤1: 去伪迹
+    document.getElementById('medianFilterBtn').addEventListener('click', () => {
+      if (processedDataLog.length === 0) {
+        alert('请先进行基础整理');
+        return;
+      }
+      
+      const windowSize = parseInt(document.getElementById('medianWindow').value) || 5;
+      const valenceValues = processedDataLog.map(r => r.face ? r.valence : NaN);
+      const arousalValues = processedDataLog.map(r => r.face ? r.arousal : NaN);
+      
+      const filteredValence = medianFilter(valenceValues, windowSize);
+      const filteredArousal = medianFilter(arousalValues, windowSize);
+      
+      for (let i = 0; i < processedDataLog.length; i++) {
+        if (processedDataLog[i].face) {
+          processedDataLog[i].valence = filteredValence[i];
+          processedDataLog[i].arousal = filteredArousal[i];
+        }
+      }
+      
+      dataLog = processedDataLog.map(r => ({ ...r }));
+      loadAllDataToChart();
+      
+      updateProcessingStatus('step1', true, `中值滤波完成，窗口=${windowSize}`);
+    });
+    
+    document.getElementById('outlierClipBtn').addEventListener('click', () => {
+      if (processedDataLog.length === 0) {
+        alert('请先进行基础整理');
+        return;
+      }
+      
+      // 异常值截断 (winsorize)
+      const faceData = processedDataLog.filter(r => r.face);
+      const valenceVals = faceData.map(r => r.valence).filter(Number.isFinite).sort((a,b) => a-b);
+      const arousalVals = faceData.map(r => r.arousal).filter(Number.isFinite).sort((a,b) => a-b);
+      
+      const vP1 = valenceVals[Math.floor(valenceVals.length * 0.01)];
+      const vP99 = valenceVals[Math.floor(valenceVals.length * 0.99)];
+      const aP1 = arousalVals[Math.floor(arousalVals.length * 0.01)];
+      const aP99 = arousalVals[Math.floor(arousalVals.length * 0.99)];
+      
+      let clippedCount = 0;
+      for (const record of processedDataLog) {
+        if (record.face) {
+          if (record.valence < vP1) { record.valence = vP1; clippedCount++; }
+          if (record.valence > vP99) { record.valence = vP99; clippedCount++; }
+          if (record.arousal < aP1) { record.arousal = aP1; clippedCount++; }
+          if (record.arousal > aP99) { record.arousal = aP99; clippedCount++; }
+        }
+      }
+      
+      dataLog = processedDataLog.map(r => ({ ...r }));
+      loadAllDataToChart();
+      
+      updateProcessingStatus('step1', true, `异常值截断完成，调整${clippedCount}个值`);
+    });
+    
+    // 步骤2: 标准化
+    document.getElementById('zeroMeanBtn').addEventListener('click', () => {
+      if (processedDataLog.length === 0) {
+        alert('请先进行去伪迹处理');
+        return;
+      }
+      
+      const faceData = processedDataLog.filter(r => r.face);
+      const valenceVals = faceData.map(r => r.valence).filter(Number.isFinite);
+      const arousalVals = faceData.map(r => r.arousal).filter(Number.isFinite);
+      
+      const vMean = valenceVals.reduce((s,v) => s+v, 0) / valenceVals.length;
+      const aMean = arousalVals.reduce((s,v) => s+v, 0) / arousalVals.length;
+      
+      for (const record of processedDataLog) {
+        if (record.face && Number.isFinite(record.valence) && Number.isFinite(record.arousal)) {
+          record.valence -= vMean;
+          record.arousal -= aMean;
+        }
+      }
+      
+      dataLog = processedDataLog.map(r => ({ ...r }));
+      loadAllDataToChart();
+      
+      updateProcessingStatus('step2', true, `零均值化完成，V均值=${vMean.toFixed(3)}, A均值=${aMean.toFixed(3)}`);
+    });
+    
+    // 归零缩放 (零均值化 + 缩放到[-1,1])
+    document.getElementById('zeroScaleBtn').addEventListener('click', () => {
+      if (processedDataLog.length === 0) {
+        alert('请先进行去伪迹处理');
+        return;
+      }
+      
+      const faceData = processedDataLog.filter(r => r.face);
+      const valenceVals = faceData.map(r => r.valence).filter(Number.isFinite);
+      const arousalVals = faceData.map(r => r.arousal).filter(Number.isFinite);
+      
+      // 1. 计算均值
+      const vMean = valenceVals.reduce((s,v) => s+v, 0) / valenceVals.length;
+      const aMean = arousalVals.reduce((s,v) => s+v, 0) / arousalVals.length;
+      
+      // 2. 应用均值偏移
+      let vVals = [];
+      let aVals = [];
+      for (const record of processedDataLog) {
+        if (record.face && Number.isFinite(record.valence) && Number.isFinite(record.arousal)) {
+          record.valence -= vMean;
+          record.arousal -= aMean;
+          vVals.push(record.valence);
+          aVals.push(record.arousal);
+        }
+      }
+      
+      // 3. 缩放到 [-1, 1] 范围
+      const vMax = Math.max(...vVals.map(Math.abs));
+      const aMax = Math.max(...aVals.map(Math.abs));
+      
+      if (vMax > 0 || aMax > 0) {
+        for (const record of processedDataLog) {
+          if (record.face && Number.isFinite(record.valence) && Number.isFinite(record.arousal)) {
+            if (vMax > 0) record.valence /= vMax;
+            if (aMax > 0) record.arousal /= aMax;
+          }
+        }
+      }
+      
+      dataLog = processedDataLog.map(r => ({ ...r }));
+      loadAllDataToChart();
+      
+      updateProcessingStatus('step2', true, `归零缩放完成，V均值=${vMean.toFixed(3)}, A均值=${aMean.toFixed(3)}, V缩放=${vMax.toFixed(3)}, A缩放=${aMax.toFixed(3)}`);
+    });
+    
+    document.getElementById('zScoreBtn').addEventListener('click', () => {
+      if (processedDataLog.length === 0) {
+        alert('请先进行去伪迹处理');
+        return;
+      }
+      
+      const valenceVals = processedDataLog.filter(r => r.face).map(r => r.valence).filter(Number.isFinite);
+      const arousalVals = processedDataLog.filter(r => r.face).map(r => r.arousal).filter(Number.isFinite);
+      
+      const vZScored = zscore(valenceVals);
+      const aZScored = zscore(arousalVals);
+      
+      let vIdx = 0, aIdx = 0;
+      for (const record of processedDataLog) {
+        if (record.face && Number.isFinite(record.valence) && Number.isFinite(record.arousal)) {
+          record.valence = vZScored[vIdx++];
+          record.arousal = aZScored[aIdx++];
+        }
+      }
+      
+      dataLog = processedDataLog.map(r => ({ ...r }));
+      loadAllDataToChart();
+      
+      updateProcessingStatus('step2', true, 'Z-Score标准化完成');
+    });
+    
+    // 步骤3: 导数计算
+    document.getElementById('sgDerivativeBtn').addEventListener('click', () => {
+      if (processedDataLog.length === 0) {
+        alert('请先进行标准化处理');
+        return;
+      }
+      
+      const windowSize = parseInt(document.getElementById('sgWindow').value) || 15;
+      const timeArray = processedDataLog.map(r => r.time);
+      const valenceArray = processedDataLog.map(r => r.face ? r.valence : NaN);
+      const arousalArray = processedDataLog.map(r => r.face ? r.arousal : NaN);
+      
+      const vDerivative = sgDerivative(timeArray, valenceArray, windowSize);
+      const aDerivative = sgDerivative(timeArray, arousalArray, windowSize);
+      
+      derivativeDataLog = processedDataLog.map((r, i) => ({
+        time: r.time,
+        valence_dt: vDerivative[i],
+        arousal_dt: aDerivative[i],
+        face: r.face
+      }));
+      
+      // 立即显示导数曲线
+      chart.updateDerivativeData(derivativeDataLog);
+      chart.toggleDerivativeDisplay(true);
+      showDerivative = true;
+      document.getElementById('showDerivativeBtn').textContent = '隐藏导数曲线';
+      
+      updateProcessingStatus('step3', true, `SG导数计算完成，窗口=${windowSize}`);
+    });
+    
+    document.getElementById('slopeDerivativeBtn').addEventListener('click', () => {
+      if (processedDataLog.length === 0) {
+        alert('请先进行标准化处理');
+        return;
+      }
+      
+      const windowSize = parseInt(document.getElementById('slopeWindow').value) || 9;
+      const timeArray = processedDataLog.map(r => r.time);
+      const valenceArray = processedDataLog.map(r => r.face ? r.valence : NaN);
+      const arousalArray = processedDataLog.map(r => r.face ? r.arousal : NaN);
+      
+      const vDerivative = slopeByWindow(timeArray, valenceArray, windowSize);
+      const aDerivative = slopeByWindow(timeArray, arousalArray, windowSize);
+      
+      derivativeDataLog = processedDataLog.map((r, i) => ({
+        time: r.time,
+        valence_dt: vDerivative[i],
+        arousal_dt: aDerivative[i],
+        face: r.face
+      }));
+      
+      // 立即显示导数曲线
+      chart.updateDerivativeData(derivativeDataLog);
+      chart.toggleDerivativeDisplay(true);
+      showDerivative = true;
+      document.getElementById('showDerivativeBtn').textContent = '隐藏导数曲线';
+      
+      updateProcessingStatus('step3', true, `鲁棒斜率计算完成，窗口=${windowSize}`);
+    });
+    
+    // 步骤4: 导数后处理
+    document.getElementById('smoothDerivativeBtn').addEventListener('click', () => {
+      if (derivativeDataLog.length === 0) {
+        alert('请先计算导数');
+        return;
+      }
+      
+      const vDerivativeSmoothed = movingAverage(derivativeDataLog.map(r => r.valence_dt), 3);
+      const aDerivativeSmoothed = movingAverage(derivativeDataLog.map(r => r.arousal_dt), 3);
+      
+      for (let i = 0; i < derivativeDataLog.length; i++) {
+        derivativeDataLog[i].valence_dt = vDerivativeSmoothed[i];
+        derivativeDataLog[i].arousal_dt = aDerivativeSmoothed[i];
+      }
+      
+      // 更新导数显示
+      chart.updateDerivativeData(derivativeDataLog);
+      
+      updateProcessingStatus('step4', true, '导数平滑完成(3点移动平均)');
+    });
+    
+    document.getElementById('normalizeDerivativeBtn').addEventListener('click', () => {
+      if (derivativeDataLog.length === 0) {
+        alert('请先计算导数');
+        return;
+      }
+      
+      const vDtVals = derivativeDataLog.filter(r => r.face).map(r => r.valence_dt).filter(Number.isFinite);
+      const aDtVals = derivativeDataLog.filter(r => r.face).map(r => r.arousal_dt).filter(Number.isFinite);
+      
+      const vDtNormalized = zscore(vDtVals);
+      const aDtNormalized = zscore(aDtVals);
+      
+      let vIdx = 0, aIdx = 0;
+      for (const record of derivativeDataLog) {
+        if (record.face && Number.isFinite(record.valence_dt) && Number.isFinite(record.arousal_dt)) {
+          record.valence_dt = vDtNormalized[vIdx++];
+          record.arousal_dt = aDtNormalized[aIdx++];
+        }
+      }
+      
+      // 更新导数显示
+      chart.updateDerivativeData(derivativeDataLog);
+      
+      updateProcessingStatus('step4', true, '导数标准化完成');
+    });
+    
+    // 步骤5: 事件检测
+    document.getElementById('detectEventsBtn').addEventListener('click', () => {
+      if (derivativeDataLog.length === 0) {
+        alert('请先计算导数');
+        return;
+      }
+      
+      // 从用户输入获取阈值
+      const upThreshold = parseFloat(document.getElementById('upThreshold').value) || 0.12;
+      const downThreshold = parseFloat(document.getElementById('downThreshold').value) || -0.12;
+      const minDuration = parseFloat(document.getElementById('minDuration').value) || 0.8;
+      
+      // 验证阈值的合理性
+      if (upThreshold <= 0) {
+        alert('上升阈值必须大于0');
+        return;
+      }
+      if (downThreshold >= 0) {
+        alert('下降阈值必须小于0');
+        return;
+      }
+      if (upThreshold <= Math.abs(downThreshold)) {
+        if (!confirm(`当前设置：上升阈值=${upThreshold}, 下降阈值=${downThreshold}\n\n建议上升阈值的绝对值大于下降阈值的绝对值，以更好地捕捉情绪变化特性。\n\n是否继续使用当前设置？`)) {
+          return;
+        }
+      }
+      
+      const timeArray = derivativeDataLog.map(r => r.time);
+      const vDtArray = derivativeDataLog.map(r => r.valence_dt);
+      const aDtArray = derivativeDataLog.map(r => r.arousal_dt);
+      
+      const vEvents = detectEvents(timeArray, vDtArray, upThreshold, downThreshold, minDuration);
+      const aEvents = detectEvents(timeArray, aDtArray, upThreshold, downThreshold, minDuration);
+      
+      eventsLog = [
+        ...vEvents.map(e => ({ ...e, type: `valence_${e.type}` })),
+        //todo 暂时只基于v试试
+        // ...aEvents.map(e => ({ ...e, type: `arousal_${e.type}` }))
+      ].sort((a, b) => a.t - b.t);
+      
+      // 立即显示事件标记
+      chart.updateEventData(eventsLog, processedDataLog);
+      chart.toggleEventDisplay(true);
+      showEvents = true;
+      document.getElementById('showEventsBtn').style.display = 'inline-block';
+      document.getElementById('showEventsBtn').textContent = '隐藏事件标记';
+      
+      updateProcessingStatus('step5', true, `事件检测完成：${eventsLog.length}个事件 (上升>${upThreshold}, 下降<${downThreshold}, 持续>${minDuration}s)`);
+      console.log('检测到的事件:', eventsLog);
+      console.log(`使用阈值: 上升=${upThreshold}, 下降=${downThreshold}, 最小持续=${minDuration}s`);
+    });
+    
+    // 控制按钮
+    document.getElementById('resetProcessingBtn').addEventListener('click', () => {
+      processedDataLog = originalDataLog.map(r => ({ ...r }));
+      dataLog = processedDataLog.map(r => ({ ...r }));
+      derivativeDataLog = [];
+      eventsLog = [];
+      
+      // 隐藏导数曲线
+      chart.toggleDerivativeDisplay(false);
+      showDerivative = false;
+      document.getElementById('showDerivativeBtn').textContent = '显示导数曲线';
+      
+      // 隐藏事件标记
+      chart.toggleEventDisplay(false);
+      showEvents = false;
+      document.getElementById('showEventsBtn').style.display = 'none';
+      document.getElementById('showEventsBtn').textContent = '显示事件标记';
+      
+      Object.keys(processingSteps).forEach(step => {
+        updateProcessingStatus(step, false);
+      });
+      
+      loadAllDataToChart();
+      updateProcessingStatus('step0', false, '处理已重置，可重新开始');
+    });
+    
+    document.getElementById('showDerivativeBtn').addEventListener('click', () => {
+      showDerivative = !showDerivative;
+      
+      if (derivativeDataLog.length > 0) {
+        chart.toggleDerivativeDisplay(showDerivative);
+        
+        const derivativeValenceData = derivativeDataLog
+          .filter(r => r.face && Number.isFinite(r.valence_dt))
+          .map(r => ({ x: r.time, y: r.valence_dt }));
+        const derivativeArousalData = derivativeDataLog
+          .filter(r => r.face && Number.isFinite(r.arousal_dt))
+          .map(r => ({ x: r.time, y: r.arousal_dt }));
+        
+        console.log(`导数显示${showDerivative ? '开启' : '关闭'}：V导数${derivativeValenceData.length}点，A导数${derivativeArousalData.length}点`);
+      } else {
+        alert('请先计算导数数据');
+        showDerivative = false;
+      }
+      
+      document.getElementById('showDerivativeBtn').textContent = 
+        showDerivative ? '隐藏导数曲线' : '显示导数曲线';
+    });
+    
+    // 事件显示控制
+    document.getElementById('showEventsBtn').addEventListener('click', () => {
+      showEvents = !showEvents;
+      
+      if (eventsLog.length > 0) {
+        chart.toggleEventDisplay(showEvents);
+        console.log(`事件标记${showEvents ? '显示' : '隐藏'}：共${eventsLog.length}个事件`);
+      } else {
+        alert('请先检测事件');
+        showEvents = false;
+      }
+      
+      document.getElementById('showEventsBtn').textContent = 
+        showEvents ? '隐藏事件标记' : '显示事件标记';
+    });
+    
+    document.getElementById('exportProcessedBtn').addEventListener('click', () => {
+      if (processedDataLog.length === 0) {
+        alert('没有处理后的数据可导出');
+        return;
+      }
+      
+      // 构建包含导数和事件的CSV
+      let header = ['time', 'valence', 'arousal', 'face'];
+      if (derivativeDataLog.length > 0) {
+        header.push('valence_dt', 'arousal_dt');
+      }
+      
+      const rows = processedDataLog.map((r, i) => {
+        let row = [
+          r.time.toFixed(3),
+          Number.isFinite(r.valence) ? r.valence.toFixed(4) : '',
+          Number.isFinite(r.arousal) ? r.arousal.toFixed(4) : '',
+          r.face ? '1' : '0'
+        ];
+        
+        if (derivativeDataLog.length > 0 && derivativeDataLog[i]) {
+          row.push(
+            Number.isFinite(derivativeDataLog[i].valence_dt) ? derivativeDataLog[i].valence_dt.toFixed(4) : '',
+            Number.isFinite(derivativeDataLog[i].arousal_dt) ? derivativeDataLog[i].arousal_dt.toFixed(4) : ''
+          );
+        }
+        
+        return row.join(',');
+      });
+      
+      rows.unshift(header.join(','));
+      
+      // 添加事件信息作为注释
+      if (eventsLog.length > 0) {
+        rows.push('');
+        rows.push('# Events:');
+        eventsLog.forEach(event => {
+          rows.push(`# ${event.type},${event.t.toFixed(3)},${event.dur.toFixed(3)}`);
+        });
+      }
+      
+      const csvContent = rows.join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      
+      const a = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      a.href = url;
+      a.download = 'processed_va_data.csv';
+      a.style.display = 'none';
+      
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+
+  </script>
+</body>
+</html>

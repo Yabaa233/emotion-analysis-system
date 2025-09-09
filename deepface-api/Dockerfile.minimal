@@ -1,0 +1,38 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# 安装系统依赖和OpenCV依赖
+RUN apt-get update && apt-get install -y \
+    libglib2.0-0 \
+    libgomp1 \
+    libgthread-2.0-0 \
+    libgl1-mesa-dev \
+    libgles2-mesa-dev \
+    libegl1-mesa-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 升级 pip
+RUN pip install --upgrade pip
+
+# 安装基础 Python 包（使用更快的opencv-python-headless）
+RUN pip install --no-cache-dir \
+    flask==2.3.3 \
+    flask-cors==4.0.0 \
+    numpy==1.24.3 \
+    pillow==10.0.1 \
+    opencv-python-headless==4.8.1.78
+
+# 安装DeepFace及其依赖
+RUN pip install --no-cache-dir tf-keras deepface
+
+# 复制应用文件
+COPY deepface_api.py .
+COPY requirements.txt .
+
+# 暴露端口
+EXPOSE 5000
+
+# 启动应用
+CMD ["python", "deepface_api.py"]

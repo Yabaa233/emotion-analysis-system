@@ -1,0 +1,25 @@
+# 忽略多余的Docker文件
+Dockerfile.simple
+Dockerfile.test
+docker-compose.yml
+
+# 忽略多余的批处理文件
+*.bat
+!start_all.bat
+!stop_all.bat
+
+# 忽略测试文件
+test_*.py
+*_test.py
+
+# 忽略文档文件
+MANUAL_*.md
+
+# 忽略Python虚拟环境
+deepface_env/
+__pycache__/
+*.pyc
+
+# 忽略临时文件
+*.tmp
+*.log
