@@ -13,6 +13,19 @@ import uuid
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# EDA 信号处理相关导入
+try:
+    import neurokit2 as nk
+    import pandas as pd
+    from scipy import signal
+    NEUROKIT_AVAILABLE = True
+    logger = logging.getLogger(__name__)
+    logger.info("NeuroKit2 可用")
+except ImportError as e:
+    NEUROKIT_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning(f"NeuroKit2 不可用: {e}")
+
 app = Flask(__name__)
 CORS(app)  # 允许跨域请求
 
@@ -76,6 +89,200 @@ def calculate_va_from_emotions(emotion_probs):
             arousal += VA_MAPPING[emotion]['arousal'] * weight
     
     return float(valence), float(arousal)  # 确保返回Python float类型
+
+# ========================= EDA 信号预处理模块 =========================
+
+class EDAPreprocessor:
+    """
+    EDA信号预处理器 - 使用官方NeuroKit2库
+    """
+    
+    def __init__(self):
+        self.available_methods = {
+            'neurokit': 'NeuroKit2官方方法',
+            'biosppy': 'BioSPPy兼容方法',
+            'cvxeda': 'cvxEDA分解方法',
+            'none': '无预处理'
+        }
+    
+    def clean_eda(self, eda_signal, sampling_rate=50.0, method='neurokit'):
+        """
+        使用NeuroKit2清理EDA信号
+        
+        Args:
+            eda_signal (list/array): 原始EDA信号
+            sampling_rate (float): 采样率 (Hz)
+            method (str): 预处理方法
+            
+        Returns:
+            dict: 包含清理后的信号和相关信息
+        """
+        if not NEUROKIT_AVAILABLE:
+            logger.warning("NeuroKit2不可用，使用简化预处理")
+            return self._fallback_clean(eda_signal, sampling_rate)
+        
+        try:
+            # 转换为numpy数组
+            signal_array = np.array(eda_signal, dtype=float)
+            
+            if method == 'none':
+                return {
+                    'cleaned_signal': signal_array.tolist(),
+                    'method_used': 'none',
+                    'sampling_rate': sampling_rate,
+                    'original_length': len(signal_array),
+                    'processed_length': len(signal_array),
+                    'quality_score': 1.0
+                }
+            
+            # 使用NeuroKit2处理EDA信号
+            if method == 'neurokit':
+                # NeuroKit2的标准EDA清理方法
+                cleaned = nk.eda_clean(signal_array, sampling_rate=sampling_rate, method='neurokit')
+            elif method == 'biosppy':
+                # BioSPPy兼容的方法
+                cleaned = nk.eda_clean(signal_array, sampling_rate=sampling_rate, method='biosppy')
+            elif method == 'cvxeda':
+                # cvxEDA方法（如果可用）
+                try:
+                    cleaned = nk.eda_clean(signal_array, sampling_rate=sampling_rate, method='cvxeda')
+                except:
+                    logger.warning("cvxEDA方法不可用，回退到neurokit方法")
+                    cleaned = nk.eda_clean(signal_array, sampling_rate=sampling_rate, method='neurokit')
+            else:
+                cleaned = nk.eda_clean(signal_array, sampling_rate=sampling_rate, method='neurokit')
+            
+            # 计算信号质量评估
+            quality_score = self._assess_signal_quality(signal_array, cleaned)
+            
+            result = {
+                'cleaned_signal': cleaned.tolist(),
+                'method_used': method,
+                'sampling_rate': sampling_rate,
+                'original_length': len(signal_array),
+                'processed_length': len(cleaned),
+                'quality_score': quality_score,
+                'preprocessing_info': {
+                    'neurokit_version': nk.__version__ if hasattr(nk, '__version__') else 'unknown',
+                    'filters_applied': f'{method}_method'
+                }
+            }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"NeuroKit2 EDA预处理失败: {e}")
+            return self._fallback_clean(eda_signal, sampling_rate)
+    
+    def decompose_eda(self, eda_signal, sampling_rate=50.0):
+        """
+        分解EDA信号为慢性和快性成分
+        """
+        if not NEUROKIT_AVAILABLE:
+            return self._fallback_decompose(eda_signal)
+        
+        try:
+            signal_array = np.array(eda_signal, dtype=float)
+            
+            # 使用NeuroKit2分解EDA信号
+            signals, info = nk.eda_process(signal_array, sampling_rate=sampling_rate)
+            
+            result = {
+                'tonic': signals['EDA_Tonic'].tolist(),  # 慢性成分 (SCL)
+                'phasic': signals['EDA_Phasic'].tolist(), # 快性成分 (SCR)
+                'clean': signals['EDA_Clean'].tolist(),   # 清理后的信号
+                'sampling_rate': sampling_rate,
+                'peaks': info.get('SCR_Peaks', []).tolist() if 'SCR_Peaks' in info else [],
+                'decomposition_method': 'neurokit2'
+            }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"EDA信号分解失败: {e}")
+            return self._fallback_decompose(eda_signal)
+    
+    def _assess_signal_quality(self, original, cleaned):
+        """评估信号质量"""
+        try:
+            # 计算信噪比改善
+            original_std = np.std(original)
+            cleaned_std = np.std(cleaned)
+            
+            if original_std == 0:
+                return 1.0
+            
+            # 简单的质量评分 (0-1)
+            snr_improvement = min(original_std / (cleaned_std + 1e-6), 2.0)
+            quality_score = min(snr_improvement / 2.0, 1.0)
+            
+            return float(quality_score)
+        except:
+            return 0.5
+    
+    def _fallback_clean(self, eda_signal, sampling_rate):
+        """当NeuroKit2不可用时的备用清理方法"""
+        signal_array = np.array(eda_signal, dtype=float)
+        
+        # 简单的移动平均滤波
+        window_size = max(3, int(sampling_rate * 0.1))  # 0.1秒的窗口
+        if len(signal_array) < window_size:
+            cleaned = signal_array
+        else:
+            cleaned = np.convolve(signal_array, np.ones(window_size)/window_size, mode='same')
+        
+        return {
+            'cleaned_signal': cleaned.tolist(),
+            'method_used': 'fallback_moving_average',
+            'sampling_rate': sampling_rate,
+            'original_length': len(signal_array),
+            'processed_length': len(cleaned),
+            'quality_score': 0.5,
+            'warning': 'NeuroKit2不可用，使用简化预处理'
+        }
+    
+    def _fallback_decompose(self, eda_signal):
+        """备用分解方法"""
+        signal_array = np.array(eda_signal, dtype=float)
+        
+        # 简单的高通/低通滤波分解
+        try:
+            from scipy.signal import butter, filtfilt
+            
+            # 低通滤波获得慢性成分 (< 0.05 Hz)
+            b_low, a_low = butter(2, 0.05, btype='low', fs=50)
+            tonic = filtfilt(b_low, a_low, signal_array)
+            
+            # 快性成分 = 原信号 - 慢性成分
+            phasic = signal_array - tonic
+            
+            return {
+                'tonic': tonic.tolist(),
+                'phasic': phasic.tolist(),
+                'clean': signal_array.tolist(),
+                'sampling_rate': 50.0,
+                'peaks': [],
+                'decomposition_method': 'fallback_butterworth',
+                'warning': 'NeuroKit2不可用，使用简化分解'
+            }
+        except:
+            # 最简单的分解
+            mean_val = np.mean(signal_array)
+            tonic = np.full_like(signal_array, mean_val)
+            phasic = signal_array - tonic
+            
+            return {
+                'tonic': tonic.tolist(),
+                'phasic': phasic.tolist(),
+                'clean': signal_array.tolist(),
+                'sampling_rate': 50.0,
+                'peaks': [],
+                'decomposition_method': 'fallback_mean',
+                'warning': 'NeuroKit2和SciPy不可用，使用最简分解'
+            }
+
+# 创建EDA预处理器实例
+eda_processor = EDAPreprocessor()
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -622,6 +829,102 @@ def batch_download(job_id):
         'job_id': job_id,
         'results': result['results'],
         'stats': result['stats']
+    })
+
+# ========================= EDA 预处理 API 端点 =========================
+
+@app.route('/eda/clean', methods=['POST'])
+def eda_clean():
+    """EDA信号清理API"""
+    try:
+        data = request.get_json()
+        
+        # 获取必需参数
+        eda_signal = data.get('signal', [])
+        if not eda_signal:
+            return jsonify({'error': '缺少signal参数'}), 400
+        
+        # 获取可选参数
+        sampling_rate = data.get('sampling_rate', 50.0)
+        method = data.get('method', 'neurokit')
+        
+        # 验证方法
+        if method not in eda_processor.available_methods:
+            return jsonify({
+                'error': f'不支持的方法: {method}',
+                'available_methods': list(eda_processor.available_methods.keys())
+            }), 400
+        
+        # 执行清理
+        result = eda_processor.clean_eda(
+            eda_signal=eda_signal,
+            sampling_rate=sampling_rate,
+            method=method
+        )
+        
+        return jsonify({
+            'status': 'success',
+            'data': result,
+            'neurokit_available': NEUROKIT_AVAILABLE
+        })
+        
+    except Exception as e:
+        logger.error(f"EDA清理失败: {e}")
+        return jsonify({'error': f'EDA清理失败: {str(e)}'}), 500
+
+@app.route('/eda/decompose', methods=['POST'])
+def eda_decompose():
+    """EDA信号分解API - 分离慢性和快性成分"""
+    try:
+        data = request.get_json()
+        
+        # 获取必需参数
+        eda_signal = data.get('signal', [])
+        if not eda_signal:
+            return jsonify({'error': '缺少signal参数'}), 400
+        
+        # 获取可选参数
+        sampling_rate = data.get('sampling_rate', 50.0)
+        
+        # 执行分解
+        result = eda_processor.decompose_eda(
+            eda_signal=eda_signal,
+            sampling_rate=sampling_rate
+        )
+        
+        return jsonify({
+            'status': 'success',
+            'data': result,
+            'neurokit_available': NEUROKIT_AVAILABLE
+        })
+        
+    except Exception as e:
+        logger.error(f"EDA分解失败: {e}")
+        return jsonify({'error': f'EDA分解失败: {str(e)}'}), 500
+
+@app.route('/eda/info', methods=['GET'])
+def eda_info():
+    """获取EDA预处理功能信息"""
+    return jsonify({
+        'status': 'success',
+        'neurokit_available': NEUROKIT_AVAILABLE,
+        'available_methods': eda_processor.available_methods,
+        'endpoints': {
+            '/eda/clean': 'EDA信号清理',
+            '/eda/decompose': 'EDA信号分解(慢性/快性成分)',
+            '/eda/info': '获取EDA功能信息'
+        },
+        'example_request': {
+            'clean': {
+                'signal': '[0.1, 0.2, 0.15, ...]',
+                'sampling_rate': 50.0,
+                'method': 'neurokit'
+            },
+            'decompose': {
+                'signal': '[0.1, 0.2, 0.15, ...]',
+                'sampling_rate': 50.0
+            }
+        }
     })
 
 if __name__ == '__main__':

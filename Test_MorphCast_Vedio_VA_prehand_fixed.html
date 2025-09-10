@@ -25,7 +25,7 @@
   </style>
 </head>
 <body>
-  <h2>🎥 Valence / Arousal + 7 Emotions：先分析，再同步回放（支持 LSL 流 / 导入XDF）</h2>
+  <h2>🎥 生理数据分析回放</h2>
 
   <div class="row">
     <button id="selectVideoBtn">📁 选择视频文件</button>
@@ -115,7 +115,41 @@
     </div>
   </div>
 
-  <canvas id="chart"></canvas>
+  <!-- 生理信号数据导入区域 -->
+  <div class="row" style="margin-top: 10px; padding: 15px; border: 1px solid #444; border-radius: 5px;">
+    <h3 style="color: #ccc; margin: 0 0 10px 0;">📊 生理信号数据导入</h3>
+    
+    <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+      <!-- 文件导入 -->
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <label style="color: #ccc; font-size: 12px;">导入生理信号数据</label>
+        <input type="file" id="physioFileInput" accept=".csv,.xdf,.json" style="color: #ccc; background: #333; border: 1px solid #555; padding: 5px; border-radius: 3px;">
+      </div>
+      
+      <!-- 采样配置 -->
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <label style="color: #ccc; font-size: 12px;">数据采样</label>
+        <div style="display: flex; gap: 5px; align-items: center;">
+          <label style="color: #aaa; font-size: 11px;">最大点数:</label>
+          <input type="number" id="maxDataPoints" value="20000" min="100" max="50000" step="100" style="width: 80px; padding: 2px 4px; background: #333; color: #fff; border: 1px solid #555; border-radius: 3px; font-size: 11px;">
+        </div>
+      </div>
+      
+      <!-- 数据状态 -->
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <label style="color: #ccc; font-size: 12px;">数据状态</label>
+        <span id="physiologicalStatus" style="color: #888; font-size: 12px;">未导入数据</span>
+      </div>
+      
+      <!-- 转换导出 -->
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <label style="color: #ccc; font-size: 12px;">数据处理</label>
+        <button id="convertToXdfBtn" disabled style="padding: 6px 12px; font-size: 12px; background: #4caf50; border: none; border-radius: 4px; color: white; cursor: pointer;">转换并导出XDF</button>
+      </div>
+    </div>
+  </div>
+
+  <canvas id="chart" style="width: 100%; max-width: 100%;"></canvas>
   
   <!-- Rate-of-Change 数据后处理控制面板 -->
   <div id="rocProcessingPanel" style="display: none; margin-top: 20px; background: #2a2a2a; padding: 15px; border-radius: 8px; border: 1px solid #444;">
@@ -128,6 +162,22 @@
         <button id="sortDataBtn">时间对齐/去重</button>
         <button id="resampleBtn">重采样(5Hz)</button>
         <span id="step0Status" class="muted">未处理</span>
+      </div>
+    </div>
+
+    <!-- 步骤0.5: NeuroKit GSR预处理 -->
+    <div class="row" style="background: #2d5016; padding: 10px; border-radius: 5px; margin-bottom: 10px; border: 1px solid #4caf50;">
+      <h4 style="color: #4caf50; margin: 0 0 10px 0;">🧠 NeuroKit GSR预处理</h4>
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <select id="neurokitMethod" style="background: #444; color: #fff; border: 1px solid #666; padding: 5px; border-radius: 3px;">
+          <option value="neurokit">NeuroKit2官方</option>
+          <option value="biosppy">BioSPPy兼容</option>
+          <option value="cvxeda">cvxEDA分解</option>
+          <option value="none">跳过预处理</option>
+        </select>
+        <button id="neurokitProcessBtn" style="background: #4caf50; color: #fff;">NeuroKit处理GSR</button>
+        <span id="neurokitStatus" class="muted">未处理</span>
+        <div id="neurokitProgress" style="display: none; color: #4caf50; font-size: 12px;"></div>
       </div>
     </div>
     
@@ -193,6 +243,28 @@
         <span id="step5Status" class="muted">未处理</span>
       </div>
     </div>
+
+    <!-- 步骤6: 异常检测 -->
+    <div class="row" style="background: #4a1e1e; padding: 10px; border-radius: 5px; margin-bottom: 10px; border: 1px solid #ff6b6b;">
+      <h4 style="color: #ff6b6b; margin: 0 0 10px 0;">🔍 异常检测 (NETS)</h4>
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <label style="color: #ccc;">数据源:</label>
+        <select id="netsDataSourcePanel" style="padding: 4px 8px; border: 1px solid #666; border-radius: 4px; background: #222; color: #fff;">
+          <option value="gsr">GSR数据</option>
+          <option value="valence">Valence数据</option>
+        </select>
+        <label style="color: #ccc;">严格度(R):</label>
+        <input id="netsThresholdPanel" type="number" min="0.010" max="1.000" step="0.001" value="0.100" style="width:85px;">
+        <label style="color: #ccc;">邻域K:</label>
+        <input id="netsKPanel" type="number" min="1" max="50" step="1" value="8" style="width:60px;">
+        <button id="netsDetectPanelBtn" style="background: #ff6b6b; color: #fff;">NETS异常检测</button>
+        <span id="netsStatusPanel" class="muted">未处理</span>
+        <span style="color: #888; font-size: 11px; margin-left: 10px;">
+          💡 R值越小越严格，K值越小越敏感 | 当前设置: 超高敏感度
+        </span>
+        <div id="netsProgressPanel" style="display: none; color: #ff6b6b; font-size: 12px;"></div>
+      </div>
+    </div>
     
     <!-- 控制按钮 -->
     <div class="row" style="border-top: 1px solid #555; padding-top: 10px;">
@@ -201,41 +273,6 @@
       <button id="exportProcessedBtn">导出处理后数据</button>
       <span id="processingStatus" style="color: #4caf50; margin-left: 20px;">就绪</span>
     </div>
-  </div>
-  
-  <!-- 生理信号数据导入区域 -->
-  <div class="row" style="margin-top: 10px; padding: 15px; border: 1px solid #444; border-radius: 5px;">
-    <h3 style="color: #ccc; margin: 0 0 10px 0;">📊 生理信号数据导入</h3>
-    
-    <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
-      <!-- 文件导入 -->
-      <div style="display: flex; flex-direction: column; gap: 5px;">
-        <label style="color: #ccc; font-size: 12px;">导入生理信号数据</label>
-        <input type="file" id="physioFileInput" accept=".csv,.xdf,.json" style="color: #ccc; background: #333; border: 1px solid #555; padding: 5px; border-radius: 3px;">
-      </div>
-      
-      <!-- 采样配置 -->
-      <div style="display: flex; flex-direction: column; gap: 5px;">
-        <label style="color: #ccc; font-size: 12px;">数据采样</label>
-        <div style="display: flex; gap: 5px; align-items: center;">
-          <label style="color: #aaa; font-size: 11px;">最大点数:</label>
-          <input type="number" id="maxDataPoints" value="20000" min="100" max="50000" step="100" style="width: 80px; padding: 2px 4px; background: #333; color: #fff; border: 1px solid #555; border-radius: 3px; font-size: 11px;">
-        </div>
-      </div>
-      
-      <!-- 数据状态 -->
-      <div style="display: flex; flex-direction: column; gap: 5px;">
-        <label style="color: #ccc; font-size: 12px;">数据状态</label>
-        <span id="physiologicalStatus" style="color: #888; font-size: 12px;">未导入数据</span>
-      </div>
-      
-      <!-- 转换导出 -->
-      <div style="display: flex; flex-direction: column; gap: 5px;">
-        <label style="color: #ccc; font-size: 12px;">数据处理</label>
-        <button id="convertToXdfBtn" disabled style="padding: 6px 12px; font-size: 12px; background: #4caf50; border: none; border-radius: 4px; color: white; cursor: pointer;">转换并导出XDF</button>
-      </div>
-    </div>
-  </div>
   
   <!-- 7类情绪显示区域 -->
   <div id="emotionChartContainer" style="margin-top: 20px;">
@@ -261,6 +298,352 @@
     // 方式C：在此写死 MorphCast License Key（优先使用）。留空则按 URL/localStorage 读取。
     const LICENSE_KEY = 'skb80c78744414c9ff1cfb03e980a675a55b6eea31e6cd';
 
+    // EDA信号预处理类 - 基于NeuroKit方法
+    class EDAPreprocessor {
+      constructor() {
+        this.apiUrl = 'http://localhost:8080'; // DeepFace API地址 (包含EDA处理功能)
+        this.methods = {
+          'neurokit': 'NeuroKit2官方方法',
+          'biosppy': 'BioSPPy兼容方法', 
+          'cvxeda': 'cvxEDA分解方法',
+          'none': '无预处理'
+        };
+        this.fallbackEnabled = true; // 启用备用方法
+      }
+
+      // 主要的EDA清理函数 - 通过API调用
+      async clean(edaSignal, samplingRate = 50, method = 'neurokit', progressCallback = null) {
+        console.log(`EDA预处理开始: ${edaSignal.length}个数据点, 采样率=${samplingRate}Hz, 方法=${method}`);
+        
+        if (method === 'none') {
+          if (progressCallback) progressCallback({ progress: 100, message: '跳过预处理' });
+          return [...edaSignal];
+        }
+
+        try {
+          // 尝试调用Python API
+          if (progressCallback) progressCallback({ progress: 10, message: '连接NeuroKit2 API...' });
+          
+          const response = await fetch(`${this.apiUrl}/eda/clean`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              signal: edaSignal,
+              sampling_rate: samplingRate,
+              method: method
+            }),
+            timeout: 30000 // 30秒超时
+          });
+
+          if (progressCallback) progressCallback({ progress: 50, message: 'NeuroKit2处理中...' });
+
+          if (!response.ok) {
+            throw new Error(`API调用失败: ${response.status} ${response.statusText}`);
+          }
+
+          const result = await response.json();
+          
+          if (result.status === 'success') {
+            if (progressCallback) progressCallback({ progress: 90, message: 'NeuroKit2处理完成' });
+            
+            console.log(`NeuroKit2预处理完成:`, result.data);
+            console.log(`质量评分: ${result.data.quality_score}`);
+            console.log(`使用方法: ${result.data.method_used}`);
+            
+            if (progressCallback) progressCallback({ progress: 100, message: `官方${result.data.method_used}预处理完成` });
+            return result.data.cleaned_signal;
+          } else {
+            throw new Error(result.error || 'API返回错误状态');
+          }
+
+        } catch (error) {
+          console.warn(`NeuroKit2 API调用失败: ${error.message}, 使用备用方法`);
+          
+          if (this.fallbackEnabled) {
+            if (progressCallback) progressCallback({ progress: 60, message: 'API不可用，使用备用预处理...' });
+            return await this.fallbackClean(edaSignal, samplingRate, method, progressCallback);
+          } else {
+            throw error;
+          }
+        }
+      }
+
+      // EDA信号分解 - 通过API调用
+      async decompose(edaSignal, samplingRate = 50, progressCallback = null) {
+        try {
+          if (progressCallback) progressCallback({ progress: 10, message: '连接分解API...' });
+          
+          const response = await fetch(`${this.apiUrl}/eda/decompose`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              signal: edaSignal,
+              sampling_rate: samplingRate
+            }),
+            timeout: 30000
+          });
+
+          if (progressCallback) progressCallback({ progress: 70, message: 'NeuroKit2分解中...' });
+
+          if (!response.ok) {
+            throw new Error(`分解API调用失败: ${response.status}`);
+          }
+
+          const result = await response.json();
+          
+          if (result.status === 'success') {
+            if (progressCallback) progressCallback({ progress: 100, message: 'NeuroKit2分解完成' });
+            console.log(`EDA信号分解完成:`, result.data);
+            return result.data;
+          } else {
+            throw new Error(result.error || '分解API返回错误');
+          }
+
+        } catch (error) {
+          console.warn(`分解API调用失败: ${error.message}`);
+          if (progressCallback) progressCallback({ progress: 100, message: '分解失败' });
+          throw error;
+        }
+      }
+
+      // 检查API可用性
+      async checkApiStatus() {
+        try {
+          const response = await fetch(`${this.apiUrl}/eda/info`, {
+            method: 'GET',
+            timeout: 5000
+          });
+          
+          if (response.ok) {
+            const result = await response.json();
+            console.log('EDA API状态:', result);
+            return result;
+          } else {
+            throw new Error(`API状态检查失败: ${response.status}`);
+          }
+        } catch (error) {
+          console.warn(`NeuroKit2 API不可用: ${error.message}`);
+          return { neurokit_available: false, error: error.message };
+        }
+      }
+
+      // 备用的本地预处理方法
+      async fallbackClean(edaSignal, samplingRate, method, progressCallback) {
+        console.log('使用备用预处理方法（非官方NeuroKit2）');
+        
+        let cleanedSignal = [...edaSignal];
+        
+        try {
+          // 步骤1: 去除明显异常值
+          if (progressCallback) progressCallback({ progress: 70, message: '备用方法: 去除异常值...' });
+          cleanedSignal = this.removeOutliers(cleanedSignal);
+          
+          // 步骤2: 中值滤波
+          if (progressCallback) progressCallback({ progress: 80, message: '备用方法: 中值滤波...' });
+          cleanedSignal = this.medianFilter(cleanedSignal, 5);
+          
+          // 步骤3: 简单低通滤波
+          if (progressCallback) progressCallback({ progress: 90, message: '备用方法: 低通滤波...' });
+          cleanedSignal = this.simpleMovingAverage(cleanedSignal, Math.max(3, Math.floor(samplingRate * 0.1)));
+          
+          if (progressCallback) progressCallback({ progress: 100, message: `备用预处理完成 (${method})` });
+          
+          console.log(`备用预处理完成: ${cleanedSignal.length}个数据点`);
+          return cleanedSignal;
+          
+        } catch (error) {
+          console.error('备用预处理也失败:', error);
+          if (progressCallback) progressCallback({ progress: 100, message: '预处理失败' });
+          return edaSignal; // 返回原始信号
+        }
+      }
+
+      // 备用方法：去除异常值
+      removeOutliers(data, threshold = 3) {
+        const mean = data.reduce((sum, val) => sum + val, 0) / data.length;
+        const std = Math.sqrt(data.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / data.length);
+        
+        return data.map(val => {
+          if (Math.abs(val - mean) > threshold * std) {
+            return mean; // 用均值替换异常值
+          }
+          return val;
+        });
+      }
+
+      // 备用方法：中值滤波
+      medianFilter(data, windowSize = 5) {
+        const filtered = [];
+        const halfWindow = Math.floor(windowSize / 2);
+        
+        for (let i = 0; i < data.length; i++) {
+          const window = [];
+          
+          const start = Math.max(0, i - halfWindow);
+          const end = Math.min(data.length - 1, i + halfWindow);
+          
+          for (let j = start; j <= end; j++) {
+            window.push(data[j]);
+          }
+          
+          window.sort((a, b) => a - b);
+          filtered[i] = window[Math.floor(window.length / 2)];
+        }
+        
+        return filtered;
+      }
+
+      // 备用方法：简单移动平均
+      simpleMovingAverage(data, windowSize = 5) {
+        const smoothed = [];
+        const halfWindow = Math.floor(windowSize / 2);
+        
+        for (let i = 0; i < data.length; i++) {
+          let sum = 0;
+          let count = 0;
+          
+          const start = Math.max(0, i - halfWindow);
+          const end = Math.min(data.length - 1, i + halfWindow);
+          
+          for (let j = start; j <= end; j++) {
+            sum += data[j];
+            count++;
+          }
+          
+          smoothed[i] = sum / count;
+        }
+        
+        return smoothed;
+      }
+    }
+
+    // NETS异常检测 - 直接调用官方Java实现
+    class NETSAnomalyDetector {
+      constructor(options = {}) {
+        this.K = options.k || 8; // 邻居数阈值 (更敏感设置)
+        this.R = options.threshold || 0.1; // 距离阈值 (更敏感设置)
+        this.W = options.W || 2000; // 窗口大小 (减小以提高检测精度)
+        this.S = options.S || 200; // 滑动步长 (减小以增加检测机会)
+        this.D = options.D || 1; // 全维度数 (单维数据)
+        this.sD = options.sD || 1; // 子维度数 (单维数据)
+        this.nW = options.nW || 1; // 窗口数量
+        this.apiUrl = 'http://localhost:5001'; // Java NETS API地址 (独立端口)
+      }
+
+      // 调用官方Java NETS实现
+      async detectAnomalies(timeSeries, options = {}) {
+        const progressCallback = options.progressCallback || (() => {});
+        
+        console.log(`调用官方Java NETS: ${timeSeries.length}个数据点, R=${this.R}, K=${this.K}`);
+        
+        try {
+          progressCallback({ phase: 'preparing', progress: 10, message: '准备数据文件...' });
+          
+          // 调用Python后端，Python会调用Java NETS
+          const response = await fetch(`${this.apiUrl}/nets/java/detect`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              data: timeSeries,
+              params: {
+                dataset: 'CUSTOM_DATA',
+                W: Math.min(this.W, timeSeries.length),
+                S: this.S,
+                R: this.R,
+                K: this.K,
+                D: this.D,
+                sD: this.sD,
+                nW: this.nW
+              }
+            })
+          });
+
+          if (!response.ok) {
+            throw new Error(`Java NETS API错误: ${response.status}`);
+          }
+
+          progressCallback({ phase: 'processing', progress: 50, message: '正在运行Java NETS算法...' });
+          const result = await response.json();
+          
+          if (result.status === 'success') {
+            progressCallback({ phase: 'complete', progress: 100, message: 'Java NETS检测完成!' });
+            
+            console.log(`Java NETS完成: ${result.outlier_count}个异常点`);
+            console.log(`执行时间: ${result.cpu_time}s, 内存使用: ${result.memory_usage}MB`);
+            
+            // 解析Java NETS结果
+            const anomalies = [];
+            if (result.outlier_indices && result.outlier_indices.length > 0) {
+              for (const index of result.outlier_indices) {
+                anomalies.push({
+                  index: index,
+                  originalIndex: index,
+                  entropy: 0, // Java NETS不返回熵值
+                  score: 0,
+                  value: timeSeries[index] || 0
+                });
+              }
+            }
+            
+            return {
+              anomalies: anomalies,
+              entropies: [],
+              outlier_count: result.outlier_count,
+              total_points: timeSeries.length,
+              anomaly_rate: (result.outlier_count / timeSeries.length) * 100,
+              execution_time: result.cpu_time,
+              memory_usage: result.memory_usage,
+              method: 'NETS_Java_Official',
+              // 原始Java NETS参数
+              java_params: {
+                dataset: result.dataset,
+                method: result.method,
+                dimensions: `${result.D}D_${result.sD}sD`,
+                parameters: `R${result.R}_K${result.K}_S${result.S}_W${result.W}_nW${result.nW}`
+              }
+            };
+          } else {
+            throw new Error(result.error || 'Java NETS执行失败');
+          }
+
+        } catch (error) {
+          console.error('Java NETS调用失败:', error);
+          progressCallback({ phase: 'error', progress: 0, message: 'Java NETS失败: ' + error.message });
+          
+          if (error.message.includes('Failed to fetch')) {
+            throw new Error('无法连接到Java NETS API服务器。请确保:\n1. Java NETS API服务器运行在 localhost:5001\n2. 已安装Java NETS环境\n3. 已配置好Java路径');
+          }
+          
+          throw error;
+        }
+      }
+
+      // 检查Java NETS环境
+      async checkJavaEnvironment() {
+        try {
+          const response = await fetch(`${this.apiUrl}/nets/java/check`);
+          const result = await response.json();
+          
+          return {
+            java_available: result.java_available || false,
+            nets_path: result.nets_path || 'unknown',
+            java_version: result.java_version || 'unknown'
+          };
+        } catch (error) {
+          return {
+            java_available: false,
+            error: error.message
+          };
+        }
+      }
+    }
+
     const video = document.getElementById('video');
     const selectVideoBtn = document.getElementById('selectVideoBtn');
     const videoInput = document.getElementById('videoInput');
@@ -278,6 +661,9 @@
     const grabCtx = grabCanvas.getContext('2d', { willReadFrequently: true });
 
     const chart = new VAChart(chartCanvas);
+    
+    // 暴露chart实例为全局变量
+    window.chart = chart;
 
     // 情绪检测状态
     let emotionDetectionEnabled = true; // 是否启用情绪检测
@@ -287,7 +673,7 @@
 
     // API 管理
     let currentAPI = 'morphcast'; // 当前使用的API: 'morphcast' 或 'deepface'
-    let deepfaceApiUrl = 'http://localhost:5000'; // DeepFace API 地址
+    let deepfaceApiUrl = 'http://localhost:8080'; // DeepFace API 地址 (独立端口)
     let apiConnected = false; // API 连接状态
 
     // 生理信号数据存储
@@ -1244,6 +1630,47 @@
       }
     });
 
+    // 全局变量存储异常检测结果
+    let netsDetector = null;
+    let anomalyResults = null;
+    let detectionCancelled = false; // 检测取消标志
+    let edaPreprocessor = new EDAPreprocessor(); // EDA预处理器
+    let cleanedGSRData = null; // 存储清理后的GSR数据
+
+    // 清除异常检测结果功能
+    function clearAnomalyResults() {
+      anomalyResults = null;
+      cleanedGSRData = null; // 重置清理后的数据
+      netsDetector = null; // 重置检测器
+      
+      // 清除图表上的异常点显示和清理后数据
+      if (chart) {
+        chart.clearAnomalies();
+        clearCleanedData();
+      }
+    }
+
+    // 更新图表显示异常点的函数
+    function updateChartWithAnomalies() {
+      if (!anomalyResults || !chart) return;
+      
+      // 默认显示异常点，使用默认大小
+      const pointSize = 8;
+      
+      // 准备异常点数据 - 使用清理后的数据或原始数据
+      const anomalyPoints = anomalyResults.anomalies.map(anomaly => ({
+        x: physiologicalData.gsr[anomaly.index]?.time || anomaly.index,
+        y: anomaly.value,
+        score: anomaly.score,
+        entropy: anomaly.entropy
+      }));
+      
+      chart.showAnomalies(anomalyPoints, {
+        color: '#ff4444',
+        size: pointSize
+      });
+    }
+
     // —— 视频文件选择功能 —— //
     let videoSelected = false;
     
@@ -1326,13 +1753,19 @@
     let processedDataLog = []; // 处理后的数据
     let derivativeDataLog = []; // 导数数据
     let eventsLog = []; // 检测到的事件
+    let neurokitProcessed = false; // NeuroKit处理状态
+    let anomalyDetected = false; // 异常检测状态
+    let cleanedGSRDataPanel = null; // 面板中的清理后GSR数据
+    let anomalyResultsPanel = null; // 面板中的异常检测结果
     let processingSteps = {
       step0: false, // 基础整理
+      neurokit: false, // NeuroKit预处理
       step1: false, // 去伪迹
       step2: false, // 标准化
       step3: false, // 导数计算
       step4: false, // 导数后处理
-      step5: false  // 事件判定
+      step5: false, // 事件判定
+      nets: false   // 异常检测
     };
     let showDerivative = false; // 是否显示导数曲线
     let showEvents = false; // 是否显示事件标记
@@ -1475,15 +1908,189 @@
     // 更新处理状态显示
     function updateProcessingStatus(step, status, message = '') {
       processingSteps[step] = status;
-      const statusEl = document.getElementById(`${step}Status`);
+      const statusEl = document.getElementById(`${step}Status`) || document.getElementById(`${step}StatusPanel`);
       if (statusEl) {
         statusEl.textContent = status ? '✓ 已完成' : '未处理';
         statusEl.style.color = status ? '#4caf50' : '#888';
       }
       
+      // 支持NeuroKit和NETS状态元素
+      if (step === 'neurokit') {
+        const neurokitStatus = document.getElementById('neurokitStatus');
+        if (neurokitStatus) {
+          neurokitStatus.textContent = status ? '✓ 已完成' : '未处理';
+          neurokitStatus.style.color = status ? '#4caf50' : '#888';
+        }
+      } else if (step === 'nets') {
+        const netsStatus = document.getElementById('netsStatusPanel');
+        if (netsStatus) {
+          netsStatus.textContent = status ? '✓ 已完成' : '未处理';
+          netsStatus.style.color = status ? '#ff6b6b' : '#888';
+        }
+      }
+      
       const mainStatus = document.getElementById('processingStatus');
       if (mainStatus && message) {
         mainStatus.textContent = message;
+      }
+    }
+
+    // 面板中的清理后数据显示功能
+    function updateChartWithCleanedData() {
+      // 检查是否有可用的清理后数据（优先使用面板数据）
+      const cleanedData = cleanedGSRDataPanel || cleanedGSRData;
+      const dataSource = cleanedGSRDataPanel ? 'NeuroKit' : 'NETS';
+      
+      if (!chart || !cleanedData || !physiologicalData.gsr) {
+        console.log('chart或清理后数据未准备好');
+        return;
+      }
+      
+      try {
+        // 准备清理后的数据点
+        const cleanedPoints = cleanedData.map((value, idx) => {
+          const originalPoint = physiologicalData.gsr[idx];
+          return {
+            x: originalPoint ? originalPoint.time : idx,
+            y: value
+          };
+        });
+        
+        // 根据数据源设置样式
+        const isNeuroKit = dataSource === 'NeuroKit';
+        const cleanedDataset = {
+          label: `GSR (${isNeuroKit ? 'NeuroKit清理' : 'NETS清理'})`,
+          data: cleanedPoints,
+          borderColor: isNeuroKit ? '#4caf50' : '#ff9800',
+          backgroundColor: isNeuroKit ? 'rgba(76, 175, 80, 0.1)' : 'rgba(255, 152, 0, 0.1)',
+          borderWidth: 1.5,
+          fill: false,
+          pointRadius: 0,
+          pointHoverRadius: 3,
+          yAxisID: 'y'
+        };
+        
+        // 检查是否已经有清理后的数据集，移除旧的
+        const existingIndices = [];
+        chart.data.datasets.forEach((dataset, idx) => {
+          if (dataset.label.includes('清理')) {
+            existingIndices.push(idx);
+          }
+        });
+        
+        // 从后往前删除，避免索引变化
+        existingIndices.reverse().forEach(idx => {
+          chart.data.datasets.splice(idx, 1);
+        });
+        
+        // 添加新的清理后数据集
+        chart.data.datasets.push(cleanedDataset);
+        
+        chart.update();
+        console.log(`显示${dataSource}清理后的GSR数据: ${cleanedPoints.length}个点`);
+      } catch (error) {
+        console.error('显示清理后数据失败:', error);
+      }
+    }
+
+    // 清除清理后的数据
+    function clearCleanedData() {
+      if (!chart) return;
+      
+      // 查找所有清理后的数据集
+      const indicesToRemove = [];
+      chart.data.datasets.forEach((dataset, index) => {
+        if (dataset.label.includes('清理')) {
+          indicesToRemove.push(index);
+        }
+      });
+      
+      // 从后往前删除，避免索引变化
+      indicesToRemove.reverse().forEach(index => {
+        chart.data.datasets.splice(index, 1);
+      });
+      
+      if (indicesToRemove.length > 0) {
+        chart.update();
+        console.log(`已清除${indicesToRemove.length}个清理后的数据集`);
+      }
+    }
+
+    // 面板中的异常点显示功能
+    function updateChartWithAnomaliesPanelData() {
+      console.log('updateChartWithAnomaliesPanelData called');
+      console.log('anomalyResultsPanel:', anomalyResultsPanel);
+      console.log('chart:', chart);
+      
+      if (!anomalyResultsPanel || !chart) {
+        console.log('anomalyResultsPanel或chart未准备好');
+        return;
+      }
+      
+      console.log('anomalyResultsPanel.anomalies:', anomalyResultsPanel.anomalies);
+      console.log('anomalies count:', anomalyResultsPanel.anomalies ? anomalyResultsPanel.anomalies.length : 'N/A');
+      
+      try {
+        // 获取当前选择的数据源
+        const dataSource = document.getElementById('netsDataSourcePanel').value;
+        let sourceData;
+        let yAxisID = 'y-axis-default'; // 默认坐标系
+        
+        console.log('数据源:', dataSource);
+        
+        if (dataSource === 'gsr') {
+          sourceData = physiologicalData.gsr;
+          yAxisID = 'y-axis-gsr';
+        } else if (dataSource === 'valence') {
+          sourceData = window.valenceData || [];
+          yAxisID = 'y-axis-default'; // Valence使用默认坐标系
+        }
+        
+        console.log('sourceData length:', sourceData ? sourceData.length : 'N/A');
+        console.log('异常点索引:', anomalyResultsPanel.anomalies.map(a => a.index));
+        
+        // 准备异常点数据 - 根据数据源获取正确的坐标
+        const anomalyPoints = anomalyResultsPanel.anomalies.map(anomaly => {
+          let x, y;
+          
+          console.log(`处理异常点索引 ${anomaly.index}`);
+          
+          if (sourceData && sourceData[anomaly.index]) {
+            x = sourceData[anomaly.index].time || anomaly.index;
+            y = sourceData[anomaly.index].value || anomaly.value;
+            console.log(`从sourceData获取: x=${x}, y=${y}`);
+          } else {
+            x = anomaly.index;
+            y = anomaly.value;
+            console.log(`使用anomaly.value: x=${x}, y=${y}`);
+          }
+          
+          console.log(`异常点 ${anomaly.index}: x=${x}, y=${y}`);
+          
+          return {
+            x: x,
+            y: y,
+            score: anomaly.score,
+            entropy: anomaly.entropy
+          };
+        });
+        
+        console.log(`准备显示${anomalyPoints.length}个异常点 (数据源: ${dataSource}, Y轴: ${yAxisID})`);
+        
+        // 更新异常点数据集的Y轴
+        if (chart._datasets && chart._datasets[10]) {
+          chart._datasets[10].yAxisID = yAxisID;
+          console.log('异常点数据集Y轴已设置为:', yAxisID);
+        } else {
+          console.error('异常点数据集不存在 chart._datasets[10]');
+        }
+        
+        chart.showAnomalies(anomalyPoints, {
+          color: '#ff6b6b',
+          size: 6
+        });
+      } catch (error) {
+        console.error('显示异常点失败:', error);
       }
     }
 
@@ -2631,6 +3238,55 @@
       
       updateProcessingStatus('step0', true, `重采样完成，${newData.length}个数据点@5Hz`);
     });
+
+    // NeuroKit GSR预处理
+    document.getElementById('neurokitProcessBtn').addEventListener('click', async () => {
+      if (!physiologicalData.gsr || physiologicalData.gsr.length === 0) {
+        alert('请先导入包含GSR数据的文件');
+        return;
+      }
+
+      const method = document.getElementById('neurokitMethod').value || 'neurokit';
+      const progressDiv = document.getElementById('neurokitProgress');
+      const statusSpan = document.getElementById('neurokitStatus');
+      const btn = document.getElementById('neurokitProcessBtn');
+      
+      try {
+        btn.disabled = true;
+        progressDiv.style.display = 'block';
+        progressDiv.textContent = '开始NeuroKit预处理...';
+        
+        const rawGSRValues = physiologicalData.gsr.map(item => item.gsr);
+        const samplingRate = physiologicalData.gsr.length > 1 ? 
+          1 / (physiologicalData.gsr[1].time - physiologicalData.gsr[0].time) : 50;
+
+        const progressCallback = (info) => {
+          progressDiv.textContent = info.message;
+        };
+
+        cleanedGSRDataPanel = await edaPreprocessor.clean(rawGSRValues, samplingRate, method, progressCallback);
+        
+        // 直接替换physiologicalData中的GSR数据
+        for (let i = 0; i < Math.min(physiologicalData.gsr.length, cleanedGSRDataPanel.length); i++) {
+          physiologicalData.gsr[i].gsr = cleanedGSRDataPanel[i];
+        }
+        
+        // 重新加载图表数据以显示清理后的数据
+        loadAllDataToChart();
+        
+        progressDiv.style.display = 'none';
+        updateProcessingStatus('neurokit', true, `NeuroKit处理完成: ${method}方法, 已替换原GSR数据`);
+        neurokitProcessed = true;
+
+      } catch (error) {
+        progressDiv.style.display = 'none';
+        progressDiv.textContent = '';
+        alert('NeuroKit处理失败: ' + error.message);
+        console.error('NeuroKit处理错误:', error);
+      } finally {
+        btn.disabled = false;
+      }
+    });
     
     // 步骤1: 去伪迹
     document.getElementById('medianFilterBtn').addEventListener('click', () => {
@@ -2646,6 +3302,21 @@
       const filteredValence = medianFilter(valenceValues, windowSize);
       const filteredArousal = medianFilter(arousalValues, windowSize);
       
+      // 处理GSR数据的去伪迹
+      let gsrProcessedCount = 0;
+      if (physiologicalData.gsr && physiologicalData.gsr.length > 0) {
+        const gsrValues = physiologicalData.gsr.map(item => item.gsr);
+        const filteredGSR = medianFilter(gsrValues, windowSize);
+        
+        for (let i = 0; i < physiologicalData.gsr.length; i++) {
+          physiologicalData.gsr[i].gsr = filteredGSR[i];
+        }
+        
+        // 更新图表中的GSR数据
+        chart.updateGSRData(physiologicalData.gsr);
+        gsrProcessedCount = physiologicalData.gsr.length;
+      }
+      
       for (let i = 0; i < processedDataLog.length; i++) {
         if (processedDataLog[i].face) {
           processedDataLog[i].valence = filteredValence[i];
@@ -2656,7 +3327,10 @@
       dataLog = processedDataLog.map(r => ({ ...r }));
       loadAllDataToChart();
       
-      updateProcessingStatus('step1', true, `中值滤波完成，窗口=${windowSize}`);
+      const message = gsrProcessedCount > 0 ? 
+        `中值滤波完成，窗口=${windowSize}，处理VA和GSR数据(${gsrProcessedCount}点)` :
+        `中值滤波完成，窗口=${windowSize}`;
+      updateProcessingStatus('step1', true, message);
     });
     
     document.getElementById('outlierClipBtn').addEventListener('click', () => {
@@ -2685,10 +3359,29 @@
         }
       }
       
+      // 处理GSR数据的异常值截断
+      let gsrClippedCount = 0;
+      if (physiologicalData.gsr && physiologicalData.gsr.length > 0) {
+        const gsrVals = physiologicalData.gsr.map(item => item.gsr).filter(Number.isFinite).sort((a,b) => a-b);
+        const gsrP1 = gsrVals[Math.floor(gsrVals.length * 0.01)];
+        const gsrP99 = gsrVals[Math.floor(gsrVals.length * 0.99)];
+        
+        for (const item of physiologicalData.gsr) {
+          if (item.gsr < gsrP1) { item.gsr = gsrP1; gsrClippedCount++; }
+          if (item.gsr > gsrP99) { item.gsr = gsrP99; gsrClippedCount++; }
+        }
+        
+        // 更新图表中的GSR数据
+        chart.updateGSRData(physiologicalData.gsr);
+      }
+      
       dataLog = processedDataLog.map(r => ({ ...r }));
       loadAllDataToChart();
       
-      updateProcessingStatus('step1', true, `异常值截断完成，调整${clippedCount}个值`);
+      const message = gsrClippedCount > 0 ? 
+        `异常值截断完成，调整VA ${clippedCount}个值，GSR ${gsrClippedCount}个值` :
+        `异常值截断完成，调整${clippedCount}个值`;
+      updateProcessingStatus('step1', true, message);
     });
     
     // 步骤2: 标准化
@@ -2949,13 +3642,131 @@
       console.log('检测到的事件:', eventsLog);
       console.log(`使用阈值: 上升=${upThreshold}, 下降=${downThreshold}, 最小持续=${minDuration}s`);
     });
-    
+
+    // NETS异常检测
+    document.getElementById('netsDetectPanelBtn').addEventListener('click', async () => {
+      const dataSource = document.getElementById('netsDataSourcePanel').value;
+      
+      // 根据数据源类型检查数据可用性
+      if (dataSource === 'gsr' && (!physiologicalData.gsr || physiologicalData.gsr.length === 0)) {
+        alert('请先导入包含GSR数据的文件');
+        return;
+      }
+      
+      if (dataSource === 'valence' && (!processedDataLog || processedDataLog.length === 0)) {
+        alert('请先导入VA数据并完成基础整理');
+        return;
+      }
+
+      const threshold = parseFloat(document.getElementById('netsThresholdPanel').value) || 0.200;
+      const k = parseInt(document.getElementById('netsKPanel').value) || 5;
+      const progressDiv = document.getElementById('netsProgressPanel');
+      const statusSpan = document.getElementById('netsStatusPanel');
+      const btn = document.getElementById('netsDetectPanelBtn');
+      
+      try {
+        btn.disabled = true;
+        progressDiv.style.display = 'block';
+        progressDiv.textContent = `开始NETS异常检测(${dataSource === 'gsr' ? 'GSR' : 'Valence'}数据)...`;
+        
+        // 根据选择的数据源获取数据
+        let inputData;
+        let dataName;
+        
+        if (dataSource === 'gsr') {
+          // 使用清理后的GSR数据，如果没有则使用原始数据
+          inputData = cleanedGSRDataPanel || physiologicalData.gsr.map(item => item.gsr);
+          dataName = 'GSR';
+        } else if (dataSource === 'valence') {
+          // 使用处理后的Valence数据
+          inputData = processedDataLog.filter(r => r.face && Number.isFinite(r.valence)).map(r => r.valence);
+          dataName = 'Valence';
+          
+          if (inputData.length === 0) {
+            throw new Error('没有有效的Valence数据点');
+          }
+        }
+        
+        console.log(`调用官方Java NETS: ${dataName}数据，${inputData.length}个数据点`);
+        console.log(`Java NETS参数: R=${threshold}, K=${k}`);
+        
+        // 创建Java NETS检测器，使用官方参数格式
+        const detector = new NETSAnomalyDetector({ 
+          k: k,           // K: 邻居数阈值
+          threshold: threshold, // R: 距离阈值
+          W: Math.min(2000, inputData.length), // W: 窗口大小 (减小以增加检测窗口数)
+          S: Math.max(100, Math.floor(inputData.length / 100)), // S: 滑动步长 (减小步长)
+          D: 1,           // D: 全维度数 (单维数据)
+          sD: 1,          // sD: 子维度数 (单维数据)
+          nW: Math.min(10, Math.floor(inputData.length / 2000)) || 1  // nW: 增加窗口数量
+        });
+        
+        // 检查Java环境
+        progressDiv.textContent = '检查Java NETS环境...';
+        const envStatus = await detector.checkJavaEnvironment();
+        
+        if (!envStatus.java_available) {
+          throw new Error(`Java NETS环境不可用。请确保:\n1. Java NETS API服务器正在运行 (localhost:5001)\n2. Java NETS已正确编译和配置\n3. Java环境变量已设置\n\n错误详情: ${envStatus.error || '未知错误'}`);
+        }
+        
+        console.log('Java NETS环境状态:', envStatus);
+        
+        const progressCallback = (info) => {
+          progressDiv.textContent = info.message;
+        };
+
+        anomalyResultsPanel = await detector.detectAnomalies(inputData, {
+          progressCallback: progressCallback
+        });
+        
+        progressDiv.style.display = 'none';
+        
+        // 获取异常点数量（兼容Java NETS返回格式）
+        const anomalyCount = anomalyResultsPanel.outlier_count || anomalyResultsPanel.anomalies.length;
+        const totalPoints = anomalyResultsPanel.total_points || inputData.length;
+        const anomalyRate = anomalyResultsPanel.anomaly_rate || ((anomalyCount / totalPoints) * 100);
+        
+        updateProcessingStatus('nets', true, `${dataName}异常检测完成: ${anomalyCount}个异常点 (${anomalyRate.toFixed(1)}%) [Java NETS官方算法]`);
+        anomalyDetected = true;
+        
+        // 显示NETS报告弹窗
+        const detectionParams = {
+          threshold,
+          k,
+          preprocessMethod: dataSource === 'gsr' && cleanedGSRDataPanel ? 'processed' : 'original',
+          totalPoints: totalPoints,
+          dataSource: dataName,
+          method: anomalyResultsPanel.method || 'NETS_Java_Official',
+          execution_time: anomalyResultsPanel.execution_time,
+          memory_usage: anomalyResultsPanel.memory_usage
+        };
+        showNetsReport(anomalyResultsPanel, detectionParams);
+        
+        // 自动显示异常点
+        updateChartWithAnomaliesPanelData();
+
+      } catch (error) {
+        progressDiv.style.display = 'none';
+        progressDiv.textContent = '';
+        alert('异常检测失败: ' + error.message);
+        console.error('NETS检测错误:', error);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     // 控制按钮
     document.getElementById('resetProcessingBtn').addEventListener('click', () => {
       processedDataLog = originalDataLog.map(r => ({ ...r }));
       dataLog = processedDataLog.map(r => ({ ...r }));
       derivativeDataLog = [];
       eventsLog = [];
+      
+      // 重置NeuroKit和异常检测状态
+      neurokitProcessed = false;
+      anomalyDetected = false;
+      cleanedGSRDataPanel = null;
+      anomalyResultsPanel = null;
       
       // 隐藏导数曲线
       chart.toggleDerivativeDisplay(false);
@@ -2967,6 +3778,10 @@
       showEvents = false;
       document.getElementById('showEventsBtn').style.display = 'none';
       document.getElementById('showEventsBtn').textContent = '显示事件标记';
+      
+      // 清除异常点和清理后数据
+      chart.clearAnomalies();
+      clearCleanedData();
       
       Object.keys(processingSteps).forEach(step => {
         updateProcessingStatus(step, false);
@@ -3072,6 +3887,102 @@
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
 
+    // NETS报告弹窗控制函数 - 简化版原生弹窗
+    function showNetsReport(anomalyResults, detectionParams) {
+      // 计算统计信息
+      const totalPoints = detectionParams.totalPoints || 0;
+      
+      // 兼容Java NETS和JavaScript版本的不同结果格式
+      let anomalyCount = 0;
+      if (anomalyResults.outlier_count !== undefined) {
+        // Java NETS返回格式
+        anomalyCount = anomalyResults.outlier_count;
+      } else if (anomalyResults.indices) {
+        // JavaScript版本格式1
+        anomalyCount = anomalyResults.indices.length;
+      } else if (anomalyResults.anomalies) {
+        // JavaScript版本格式2
+        anomalyCount = anomalyResults.anomalies.length;
+      }
+      
+      // 使用Java NETS返回的数据或计算默认值
+      const anomalyRate = anomalyResults.anomaly_rate !== undefined ? 
+        anomalyResults.anomaly_rate.toFixed(2) : 
+        (totalPoints > 0 ? (anomalyCount / totalPoints * 100).toFixed(2) : '0.00');
+      
+      // 计算熵值统计信息（Java版本可能不提供）
+      let maxEntropy = 0;
+      let avgEntropy = 0;
+      let stdEntropy = 0;
+      let maxPossibleThreshold = 'N/A';
+      
+      // 兼容不同的熵值数据格式
+      let entropyData = anomalyResults.entropy || anomalyResults.entropies || [];
+      
+      if (entropyData && entropyData.length > 0) {
+        maxEntropy = Math.max(...entropyData);
+        const minEntropy = Math.min(...entropyData);
+        avgEntropy = entropyData.reduce((a,b) => a+b, 0) / entropyData.length;
+        
+        // 计算标准差
+        const variance = entropyData.reduce((sum, val) => sum + Math.pow(val - avgEntropy, 2), 0) / entropyData.length;
+        stdEntropy = Math.sqrt(variance);
+        
+        // 计算最大可设置的严格度：取最大绝对Z-score（因为算法使用绝对值）
+        const maxPositiveZ = Math.abs(maxEntropy - avgEntropy) / stdEntropy;
+        const maxNegativeZ = Math.abs(minEntropy - avgEntropy) / stdEntropy;
+        maxPossibleThreshold = Math.max(maxPositiveZ, maxNegativeZ).toFixed(3);
+      } else {
+        // Java NETS通常不返回熵值统计，显示不适用
+        maxPossibleThreshold = 'N/A (Java NETS)';
+      }
+      
+      // 生成简洁的报告信息
+      const reportMessage = `� NETS异常检测报告
+
+📊 检测结果:
+总数据点: ${totalPoints}
+异常点数: ${anomalyCount}
+异常率: ${anomalyRate}%
+
+🎯 严格度设置参考:
+当前严格度: ${parseFloat(detectionParams.threshold).toFixed(3)}
+最大可设严格度: ${maxPossibleThreshold} (能检测到最异常的点)
+
+💡 快速调整建议:
+${anomalyRate == '0.00' ? 
+  `- 未检测到异常，建议降低严格度到 ${Math.max(1.000, detectionParams.threshold - 0.5).toFixed(3)}` :
+  anomalyRate > 10 ? 
+    `- 异常率偏高，建议提高严格度到 ${Math.min(5.000, parseFloat(detectionParams.threshold) + 0.5).toFixed(3)}` :
+    '- 检测结果合理，参数设置适当'
+}`;
+
+      // 使用原生弹窗显示 - 兼容Java NETS版本
+      const algorithmInfo = detectionParams.method ? `[${detectionParams.method}]` : '';
+      const performanceInfo = detectionParams.execution_time ? 
+        `\n⚡ 执行时间: ${detectionParams.execution_time.toFixed(3)}s` : '';
+      const memoryInfo = detectionParams.memory_usage ? 
+        `\n💾 内存使用: ${detectionParams.memory_usage.toFixed(1)}MB` : '';
+      
+      const simpleReport = `📊 NETS检测结果 ${algorithmInfo}
+数据源: ${detectionParams.dataSource || 'Unknown'}
+总数据点: ${totalPoints}
+异常点数: ${anomalyCount}
+异常率: ${anomalyRate}%${performanceInfo}${memoryInfo}
+
+🎯 参数设置:
+当前阈值: ${parseFloat(detectionParams.threshold).toFixed(3)}
+邻居数K: ${detectionParams.k || 'N/A'}
+最大可设阈值: ${maxPossibleThreshold}`;
+      
+      alert(simpleReport);
+    }
+    
+    function closeNetsReport() {
+      // 原生弹窗不需要这个函数，保留以免其他地方引用出错
+    }
+
   </script>
+
 </body>
 </html>
