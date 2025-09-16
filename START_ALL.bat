@@ -22,13 +22,13 @@ echo Stopping existing containers...
 docker stop deepface-api 2>nul
 docker rm deepface-api 2>nul
 
-echo Building and starting DeepFace API...
-docker build -f Dockerfile.minimal -t deepface-test .
-docker run -d -p 5000:5000 --name deepface-api ^
+echo Building and starting DeepFace + PyOD API...
+docker build -f Dockerfile -t deepface-pyod-api .
+docker run -d -p 8080:5000 --name deepface-api ^
     --memory=2g ^
     --cpus=2 ^
     --shm-size=1g ^
-    deepface-test
+    deepface-pyod-api
 
 echo Waiting for service startup...
 timeout /t 10 /nobreak >nul
@@ -40,7 +40,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 ) else (
-    echo SUCCESS: DeepFace API is running on http://localhost:5000
+    echo SUCCESS: DeepFace + PyOD API is running on http://localhost:8080
 )
 
 echo.
@@ -53,9 +53,10 @@ echo ========================================
 echo   System is ready!
 echo ========================================
 echo.
-echo You can now:
-echo 1. Select API type in the web page
-echo 2. Start video analysis
+echo Services available:
+echo - Emotion Analysis: http://localhost:8080/analyze
+echo - Anomaly Detection: http://localhost:8080/anomaly/info
+echo - Health Check: http://localhost:8080/health
 echo.
 echo To stop the service, run: STOP_ALL.bat
 echo.

@@ -516,6 +516,76 @@ class VAChart {
     }
   }
 
+  // 显示机器学习异常检测结果
+  showMLAnomalies(anomalies, options = {}) {
+    console.log('🤖 VAChart.showMLAnomalies 被调用:', anomalies.length, '个异常点', options);
+    
+    const { 
+      color = '#ff6b6b', 
+      size = 8, 
+      label = 'ML异常点',
+      dataSource = 'unknown'
+    } = options;
+
+    // 移除之前的ML异常点数据集
+    this._datasets = this._datasets.filter(ds => !ds.label.includes('ML异常点'));
+    
+    // 调试信息
+    console.log('🔍 异常点数据样本:', anomalies.slice(0, 3));
+    console.log('🔍 Y值范围:', {
+      min: Math.min(...anomalies.map(a => a.y)),
+      max: Math.max(...anomalies.map(a => a.y))
+    });
+    console.log('🔍 数据源和Y轴ID判断:', {
+      dataSource,
+      dataSourceUpper: dataSource.toUpperCase(),
+      isGSR: dataSource.toUpperCase() === 'GSR',
+      targetYAxisID: dataSource.toUpperCase() === 'GSR' ? 'y-axis-gsr' : 'y-axis-main'
+    });
+    
+    // 创建新的ML异常点数据集
+    const mlAnomalyDataset = {
+      label: `${label} (${dataSource})`,
+      data: anomalies.map(anomaly => ({
+        x: anomaly.x,
+        y: anomaly.y
+      })),
+      backgroundColor: color,
+      borderColor: color,
+      pointRadius: size,
+      pointHoverRadius: size + 2,
+      pointBorderWidth: 2,
+      pointBorderColor: '#fff',
+      showLine: false,
+      fill: false,
+      lineTension: 0,
+      borderWidth: 0,
+      yAxisID: dataSource.toUpperCase() === 'GSR' ? 'y-axis-gsr' : 'y-axis-main' // 使用正确的Y轴ID
+    };
+    
+    // 添加到数据集
+    this._datasets.push(mlAnomalyDataset);
+    this._chart.data.datasets = this._datasets;
+    
+    console.log(`⭐ 已添加 ${anomalies.length} 个ML异常点到图表，数据集索引: ${this._datasets.length - 1}`);
+    console.log(`⭐ 当前总数据集数量: ${this._datasets.length}`);
+    
+    // 强制重新渲染
+    this._chart.update('active');
+  }
+
+  // 隐藏机器学习异常检测结果
+  hideMLAnomalies() {
+    console.log('🤖 VAChart.hideMLAnomalies 被调用');
+    
+    // 移除ML异常点数据集
+    this._datasets = this._datasets.filter(ds => !ds.label.includes('ML异常点'));
+    this._chart.data.datasets = this._datasets;
+    
+    console.log('⭐ 已移除所有ML异常点');
+    this._chart.update('none');
+  }
+
 }
 
 function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }

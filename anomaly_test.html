@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>异常检测可视化测试</title>
+    <style>
+        body { background: #1a1a1a; color: #fff; font-family: Arial; padding: 20px; }
+        .test-section { margin: 20px 0; padding: 15px; border: 1px solid #444; border-radius: 5px; }
+        button { padding: 8px 16px; margin: 5px; background: #6366f1; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #5855eb; }
+        #testResults { font-family: monospace; font-size: 12px; background: #222; padding: 10px; margin-top: 10px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>🔍 异常检测可视化测试工具</h1>
+    
+    <div class="test-section">
+        <h3>测试API连接</h3>
+        <button onclick="testApiConnection()">测试API健康状态</button>
+        <button onclick="testAnomalyApi()">测试异常检测API</button>
+    </div>
+    
+    <div class="test-section">
+        <h3>测试数据生成</h3>
+        <button onclick="generateTestData()">生成测试GSR数据</button>
+        <button onclick="testAnomalyDetection()">测试异常检测</button>
+        <button onclick="analyzeResults()">分析结果</button>
+    </div>
+    
+    <div id="testResults"></div>
+
+    <script>
+        let testData = null;
+        let detectionResults = null;
+        
+        function log(message) {
+            const results = document.getElementById('testResults');
+            results.innerHTML += new Date().toLocaleTimeString() + ': ' + message + '\n';
+            results.scrollTop = results.scrollHeight;
+            console.log(message);
+        }
+        
+        async function testApiConnection() {
+            log('🔗 测试API连接...');
+            try {
+                const response = await fetch('http://localhost:8080/health');
+                const result = await response.json();
+                log('✅ API健康检查通过: ' + JSON.stringify(result));
+            } catch (error) {
+                log('❌ API连接失败: ' + error.message);
+            }
+        }
+        
+        async function testAnomalyApi() {
+            log('🤖 测试异常检测API...');
+            try {
+                const response = await fetch('http://localhost:8080/anomaly/info');
+                const result = await response.json();
+                log('✅ 异常检测API可用: ' + JSON.stringify(result.available_algorithms));
+            } catch (error) {
+                log('❌ 异常检测API测试失败: ' + error.message);
+            }
+        }
+        
+        function generateTestData() {
+            log('📊 生成测试GSR数据...');
+            
+            // 生成类似真实GSR数据的测试数据
+            testData = [];
+            const totalPoints = 1000;
+            const startTime = 0;
+            const timeStep = 0.1; // 每个数据点间隔0.1秒
+            
+            for (let i = 0; i < totalPoints; i++) {
+                const time = startTime + i * timeStep;
+                
+                // 基础GSR值（在0.5-0.8之间波动）
+                let gsr = 0.65 + 0.1 * Math.sin(time * 0.1) + 0.05 * Math.random();
+                
+                // 在某些时间点添加异常值
+                if (i % 100 === 0 || i % 137 === 0) {
+                    gsr += 0.2 + 0.1 * Math.random(); // 异常高值
+                }
+                if (i % 83 === 0) {
+                    gsr -= 0.15 + 0.05 * Math.random(); // 异常低值
+                }
+                
+                testData.push([gsr]);
+            }
+            
+            log(`✅ 生成了 ${testData.length} 个测试数据点`);
+            log(`📈 数据范围: ${Math.min(...testData.map(d => d[0])).toFixed(3)} - ${Math.max(...testData.map(d => d[0])).toFixed(3)}`);
+        }
+        
+        async function testAnomalyDetection() {
+            if (!testData) {
+                log('❌ 请先生成测试数据');
+                return;
+            }
+            
+            log('🔍 运行异常检测...');
+            try {
+                const response = await fetch('http://localhost:8080/anomaly/isolation_forest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        data: testData,
+                        contamination: 0.1,
+                        random_state: 42
+                    })
+                });
+                
+                detectionResults = await response.json();
+                
+                if (detectionResults.status === 'success') {
+                    log(`✅ 异常检测完成:`);
+                    log(`   - 总数据点: ${detectionResults.total_points}`);
+                    log(`   - 异常点数: ${detectionResults.anomaly_count}`);
+                    log(`   - 异常比例: ${detectionResults.anomaly_percentage}%`);
+                    log(`   - 执行时间: ${detectionResults.execution_time}s`);
+                } else {
+                    log('❌ 异常检测失败: ' + detectionResults.error);
+                }
+            } catch (error) {
+                log('❌ 异常检测请求失败: ' + error.message);
+            }
+        }
+        
+        function analyzeResults() {
+            if (!detectionResults || !testData) {
+                log('❌ 请先运行异常检测');
+                return;
+            }
+            
+            log('📋 分析检测结果...');
+            
+            const anomalyIndices = detectionResults.anomaly_indices;
+            const anomalyScores = detectionResults.anomaly_scores;
+            
+            // 构建异常点数据
+            const anomalies = anomalyIndices.map(idx => ({
+                index: idx,
+                time: idx * 0.1, // 对应时间
+                value: testData[idx][0], // GSR值
+                score: anomalyScores[idx]
+            }));
+            
+            log(`🎯 异常点详情:`);
+            anomalies.slice(0, 5).forEach((anomaly, i) => {
+                log(`   ${i+1}. 时间:${anomaly.time.toFixed(1)}s, 值:${anomaly.value.toFixed(3)}, 分数:${anomaly.score.toFixed(3)}`);
+            });
+            
+            // 分析异常点分布
+            const valueRange = {
+                min: Math.min(...anomalies.map(a => a.value)),
+                max: Math.max(...anomalies.map(a => a.value))
+            };
+            
+            const timeRange = {
+                min: Math.min(...anomalies.map(a => a.time)),
+                max: Math.max(...anomalies.map(a => a.time))
+            };
+            
+            log(`📊 异常点分布:`);
+            log(`   - 值范围: ${valueRange.min.toFixed(3)} - ${valueRange.max.toFixed(3)}`);
+            log(`   - 时间范围: ${timeRange.min.toFixed(1)}s - ${timeRange.max.toFixed(1)}s`);
+            
+            // 检查数据密度
+            const totalTime = (testData.length - 1) * 0.1;
+            const density = anomalies.length / totalTime;
+            log(`   - 异常密度: ${density.toFixed(2)} 异常点/秒`);
+            
+            // 建议
+            if (density > 10) {
+                log('⚠️ 异常点密度很高，可能在图表上重叠显示');
+                log('💡 建议: 使用更小的点大小或降低contamination参数');
+            }
+            
+            if (valueRange.max - valueRange.min < 0.1) {
+                log('⚠️ 异常点值范围很小，可能在图表上难以区分');
+                log('💡 建议: 检查Y轴缩放或使用不同的视觉样式');
+            }
+        }
+    </script>
+</body>
+</html>

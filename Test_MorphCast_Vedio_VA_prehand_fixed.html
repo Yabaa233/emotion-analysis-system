@@ -186,6 +186,58 @@
       </div>
     </div>
     
+    <!-- 异常检测区域 -->
+    <div class="row" style="margin-top: 15px; padding: 15px; border: 1px solid #6366f1; border-radius: 5px; background: #1a1a2e;">
+      <h3 style="color: #a78bfa; margin: 0 0 15px 0;">🤖 机器学习异常检测 (Isolation Forest)</h3>
+      
+      <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap; margin-bottom: 10px;">
+        <!-- 数据源选择 -->
+        <div style="display: flex; flex-direction: column; gap: 5px;">
+          <label style="color: #ccc; font-size: 12px;">数据源</label>
+          <select id="anomalyDataSource" style="background: #444; color: #fff; border: 1px solid #666; padding: 5px; border-radius: 3px;">
+            <option value="gsr">皮电数据 (GSR)</option>
+            <option value="valence">效价数据 (Valence)</option>
+          </select>
+        </div>
+        
+        <!-- 污染率设置 -->
+        <div style="display: flex; flex-direction: column; gap: 5px;">
+          <label style="color: #ccc; font-size: 12px;">异常比例</label>
+          <select id="contaminationRate" style="background: #444; color: #fff; border: 1px solid #666; padding: 5px; border-radius: 3px;">
+            <option value="0.05">5% (严格)</option>
+            <option value="0.10" selected>10% (标准)</option>
+            <option value="0.15">15% (宽松)</option>
+            <option value="0.20">20% (非常宽松)</option>
+          </select>
+        </div>
+        
+        <!-- 操作按钮 -->
+        <div style="display: flex; flex-direction: column; gap: 5px;">
+          <label style="color: #ccc; font-size: 12px;">操作</label>
+          <button id="runAnomalyDetectionBtn" style="padding: 6px 12px; font-size: 12px; background: #6366f1; border: none; border-radius: 4px; color: white;">运行检测</button>
+        </div>
+        
+        <!-- 显示控制 -->
+        <div style="display: flex; flex-direction: column; gap: 5px;">
+          <label style="color: #ccc; font-size: 12px;">显示</label>
+          <button id="toggleAnomalyDisplay" disabled style="padding: 6px 12px; font-size: 12px; background: #ef4444; border: none; border-radius: 4px; color: white;">显示异常点</button>
+        </div>
+      </div>
+      
+      <!-- 状态和进度 -->
+      <div id="anomalyDetectionStatus" style="margin-top: 8px; font-size: 12px; color: #888;">
+        未运行检测
+      </div>
+      
+      <!-- 检测结果 -->
+      <div id="anomalyDetectionResults" style="display: none; margin-top: 10px; padding: 8px; background: rgba(99, 102, 241, 0.1); border-radius: 4px;">
+        <div style="color: #a78bfa; font-size: 12px;">
+          检测完成：<span id="anomalyCount">0</span> 个异常点 / <span id="totalPoints">0</span> 个数据点 
+          (<span id="anomalyPercentage">0%</span>)
+        </div>
+      </div>
+    </div>
+    
     <!-- 步骤1: 去伪迹/去尖峰 -->
     <div class="row" style="background: #333; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
       <h4 style="color: #fff; margin: 0 0 10px 0;">1️⃣ 去伪迹/去尖峰</h4>
@@ -699,6 +751,216 @@
       ppg: [],
       startTime: null
     };
+
+    // 异常检测相关
+    let anomalyDetectionResults = null;
+    let showingAnomalies = false;
+
+    // Isolation Forest异常检测器类
+    class IsolationForestDetector {
+      constructor() {
+        this.apiUrl = deepfaceApiUrl; // 使用DeepFace API地址
+        this.results = null;
+      }
+
+      // 准备数据
+      prepareData(dataSource) {
+        let data = [];
+        let timestamps = [];
+        let sourceInfo = '';
+        
+        switch(dataSource) {
+          case 'gsr':
+            if (!physiologicalData.gsr || physiologicalData.gsr.length === 0) {
+              throw new Error('请先导入GSR数据');
+            }
+            
+            for (const item of physiologicalData.gsr) {
+              if (isFinite(item.gsr)) {
+                data.push([item.gsr]); // 单维特征
+                timestamps.push(item.time);
+              }
+            }
+            sourceInfo = `GSR数据：${data.length}个数据点`;
+            break;
+            
+          case 'valence':
+            if (!dataLog || dataLog.length === 0) {
+              throw new Error('请先进行情绪分析');
+            }
+            
+            for (const record of dataLog) {
+              if (record.face && isFinite(record.valence)) {
+                data.push([record.valence]); // 单维特征
+                timestamps.push(record.time);
+              }
+            }
+            sourceInfo = `Valence数据：${data.length}个数据点`;
+            break;
+            
+          default:
+            throw new Error('未知的数据源');
+        }
+        
+        if (data.length === 0) {
+          throw new Error(`${dataSource} 数据为空`);
+        }
+        
+        console.log(`准备异常检测数据：${sourceInfo}`);
+        return { data, timestamps, sourceInfo };
+      }
+
+      // 运行Isolation Forest检测
+      async runDetection(dataSource, contamination = 0.1) {
+        try {
+          const { data, timestamps, sourceInfo } = this.prepareData(dataSource);
+          
+          // 调用PyOD API
+          const response = await fetch(`${this.apiUrl}/anomaly/isolation_forest`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              data: data,
+              contamination: contamination,
+              random_state: 42
+            }),
+            timeout: 30000
+          });
+
+          if (!response.ok) {
+            throw new Error(`API调用失败: ${response.status} ${response.statusText}`);
+          }
+
+          const result = await response.json();
+          
+          if (result.status === 'success') {
+            // 处理返回结果
+            const anomalyIndices = [];
+            const anomalyScores = result.anomaly_scores || [];
+            const predictions = result.predictions || [];
+            
+            predictions.forEach((pred, idx) => {
+              if (pred === 1) { // 异常点
+                anomalyIndices.push(idx);
+              }
+            });
+            
+            this.results = {
+              dataSource: dataSource,
+              contamination: contamination,
+              totalPoints: data.length,
+              anomalyIndices: anomalyIndices,
+              anomalyScores: anomalyScores,
+              timestamps: timestamps,
+              data: data,
+              anomalies: anomalyIndices.map(idx => ({
+                index: idx,
+                time: timestamps[idx],
+                value: data[idx][0], // 单维数据
+                score: anomalyScores[idx]
+              })),
+              sourceInfo: sourceInfo
+            };
+            
+            console.log(`Isolation Forest异常检测完成:`, this.results);
+            return this.results;
+            
+          } else {
+            throw new Error(result.error || 'API返回错误状态');
+          }
+
+        } catch (error) {
+          console.error(`Isolation Forest异常检测失败: ${error.message}`);
+          throw error;
+        }
+      }
+
+      // 显示异常点
+      showAnomalies() {
+        if (!this.results || !chart) return;
+        
+        // 准备异常点数据
+        const anomalyPoints = this.results.anomalies.map(anomaly => ({
+          x: anomaly.time,
+          y: anomaly.value,
+          score: anomaly.score
+        }));
+        
+        // 调试信息
+        console.log(`准备显示异常点:`, {
+          totalAnomalies: anomalyPoints.length,
+          dataSource: this.results.dataSource,
+          samplePoints: anomalyPoints.slice(0, 5),
+          yRange: {
+            min: Math.min(...anomalyPoints.map(p => p.y)),
+            max: Math.max(...anomalyPoints.map(p => p.y))
+          },
+          xRange: {
+            min: Math.min(...anomalyPoints.map(p => p.x)),
+            max: Math.max(...anomalyPoints.map(p => p.x))
+          }
+        });
+        
+        // 根据数据源选择显示样式
+        const isGSR = this.results.dataSource === 'gsr';
+        const options = {
+          color: isGSR ? '#ff6b6b' : '#fbbf24',
+          size: isGSR ? 4 : 6, // GSR用更小的点，因为数据密集
+          label: 'ML异常点',
+          dataSource: this.results.dataSource.toUpperCase()
+        };
+        
+        // 使用VAChart的新方法显示异常点
+        chart.showMLAnomalies(anomalyPoints, options);
+        
+        showingAnomalies = true;
+        console.log(`显示 ${anomalyPoints.length} 个${this.results.dataSource.toUpperCase()}异常点`);
+      }
+
+      // 隐藏异常点
+      hideAnomalies() {
+        if (chart) {
+          chart.hideMLAnomalies();
+        }
+        showingAnomalies = false;
+        console.log('已隐藏异常点');
+      }
+
+      // 切换异常点显示
+      toggleAnomalies() {
+        if (showingAnomalies) {
+          this.hideAnomalies();
+        } else {
+          this.showAnomalies();
+        }
+      }
+
+      // 检查API状态
+      async checkApiStatus() {
+        try {
+          const response = await fetch(`${this.apiUrl}/anomaly/info`, {
+            method: 'GET',
+            timeout: 5000
+          });
+          
+          if (response.ok) {
+            const result = await response.json();
+            console.log('PyOD异常检测API状态:', result);
+            return { available: true, info: result };
+          } else {
+            throw new Error(`API状态检查失败: ${response.status}`);
+          }
+        } catch (error) {
+          console.warn(`PyOD异常检测API不可用: ${error.message}`);
+          return { available: false, error: error.message };
+        }
+      }
+    }
+
+    // 创建异常检测器实例
+    const isolationForestDetector = new IsolationForestDetector();
 
     // 初始化情绪图表
     function initEmotionChart() {
@@ -3547,6 +3809,67 @@
       }
     });
     
+    // 异常检测事件监听器
+    document.getElementById('runAnomalyDetectionBtn').addEventListener('click', async () => {
+      const dataSource = document.getElementById('anomalyDataSource').value;
+      const contamination = parseFloat(document.getElementById('contaminationRate').value) || 0.1;
+      
+      const statusEl = document.getElementById('anomalyDetectionStatus');
+      const resultsEl = document.getElementById('anomalyDetectionResults');
+      const runBtn = document.getElementById('runAnomalyDetectionBtn');
+      const toggleBtn = document.getElementById('toggleAnomalyDisplay');
+      
+      try {
+        runBtn.disabled = true;
+        statusEl.textContent = '正在运行Isolation Forest检测...';
+        statusEl.style.color = '#fbbf24';
+        resultsEl.style.display = 'none';
+        
+        // 运行异常检测
+        const results = await isolationForestDetector.runDetection(dataSource, contamination);
+        
+        // 显示结果
+        const anomalyCount = results.anomalies.length;
+        const anomalyPercentage = ((anomalyCount / results.totalPoints) * 100).toFixed(1);
+        
+        document.getElementById('anomalyCount').textContent = anomalyCount;
+        document.getElementById('totalPoints').textContent = results.totalPoints;
+        document.getElementById('anomalyPercentage').textContent = anomalyPercentage + '%';
+        
+        statusEl.textContent = `检测完成 - ${results.sourceInfo}`;
+        statusEl.style.color = '#4caf50';
+        resultsEl.style.display = 'block';
+        toggleBtn.disabled = false;
+        toggleBtn.textContent = '显示异常点';
+        
+        // 自动显示异常点
+        isolationForestDetector.showAnomalies();
+        toggleBtn.textContent = '隐藏异常点';
+        
+        // 保存检测结果
+        anomalyDetectionResults = results;
+        
+        console.log(`异常检测完成：${dataSource}数据，${anomalyCount}/${results.totalPoints}异常点 (${anomalyPercentage}%)`);
+        
+      } catch (error) {
+        statusEl.textContent = '检测失败: ' + error.message;
+        statusEl.style.color = '#ef4444';
+        resultsEl.style.display = 'none';
+        console.error('异常检测错误:', error);
+      } finally {
+        runBtn.disabled = false;
+      }
+    });
+
+    // 显示/隐藏异常点按钮
+    document.getElementById('toggleAnomalyDisplay').addEventListener('click', () => {
+      const btn = document.getElementById('toggleAnomalyDisplay');
+      
+      isolationForestDetector.toggleAnomalies();
+      
+      btn.textContent = showingAnomalies ? '隐藏异常点' : '显示异常点';
+    });
+    
     // 步骤1: 去伪迹
     document.getElementById('medianFilterBtn').addEventListener('click', () => {
       if (processedDataLog.length === 0) {
@@ -3914,6 +4237,26 @@
       anomalyDetected = false;
       cleanedGSRDataPanel = null;
       anomalyResultsPanel = null;
+      
+      // 清除异常检测结果
+      anomalyDetectionResults = null;
+      showingAnomalies = false;
+      if (isolationForestDetector) {
+        isolationForestDetector.results = null;
+        isolationForestDetector.hideAnomalies();
+      }
+      
+      // 清除图表上的ML异常点
+      if (chart) {
+        chart.hideMLAnomalies();
+      }
+      
+      // 重置异常检测UI
+      document.getElementById('anomalyDetectionStatus').textContent = '未运行检测';
+      document.getElementById('anomalyDetectionStatus').style.color = '#888';
+      document.getElementById('anomalyDetectionResults').style.display = 'none';
+      document.getElementById('toggleAnomalyDisplay').disabled = true;
+      document.getElementById('toggleAnomalyDisplay').textContent = '显示异常点';
       
       // 隐藏导数曲线
       chart.toggleDerivativeDisplay(false);

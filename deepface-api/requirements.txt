@@ -12,6 +12,9 @@ pandas==2.0.3
 scipy==1.11.2
 matplotlib==3.7.2
 
+# PyOD 异常检测库
+pyod==1.1.3
+
 # 可选的EDA分析增强包 (可能需要额外系统依赖)
 # cvxpy==1.3.2
 # bioread==3.0.1

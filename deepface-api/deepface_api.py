@@ -26,6 +26,22 @@ except ImportError as e:
     logger = logging.getLogger(__name__)
     logger.warning(f"NeuroKit2 不可用: {e}")
 
+# PyOD 异常检测相关导入
+try:
+    from pyod.models.ecod import ECOD
+    from pyod.models.iforest import IForest
+    from pyod.models.pca import PCA
+    from pyod.models.mcd import MCD
+    from pyod.models.gmm import GMM
+    from sklearn.preprocessing import StandardScaler
+    PYOD_AVAILABLE = True
+    logger = logging.getLogger(__name__)
+    logger.info("PyOD 异常检测库可用")
+except ImportError as e:
+    PYOD_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning(f"PyOD 不可用: {e}")
+
 app = Flask(__name__)
 CORS(app)  # 允许跨域请求
 
@@ -283,6 +299,121 @@ class EDAPreprocessor:
 
 # 创建EDA预处理器实例
 eda_processor = EDAPreprocessor()
+
+class AnomalyDetector:
+    """PyOD异常检测器"""
+    
+    def __init__(self):
+        self.available_algorithms = {
+            'isolation_forest': IForest,
+            'ecod': ECOD,
+            'pca': PCA,
+            'mcd': MCD,
+            'gmm': GMM
+        } if PYOD_AVAILABLE else {}
+        
+    def detect_anomalies(self, data, algorithm='isolation_forest', contamination=0.1, **kwargs):
+        """
+        异常检测主函数
+        
+        Args:
+            data: list or array-like, 输入数据 [[feature1, feature2, ...], ...]
+            algorithm: str, 算法名称
+            contamination: float, 异常比例 (0.01-0.5)
+            **kwargs: 算法特定参数
+            
+        Returns:
+            dict: 检测结果
+        """
+        if not PYOD_AVAILABLE:
+            raise RuntimeError("PyOD库不可用，请检查安装")
+            
+        if algorithm not in self.available_algorithms:
+            raise ValueError(f"不支持的算法: {algorithm}")
+            
+        try:
+            # 数据预处理
+            data_array = np.array(data)
+            if data_array.ndim == 1:
+                data_array = data_array.reshape(-1, 1)
+                
+            # 数据标准化
+            scaler = StandardScaler()
+            data_scaled = scaler.fit_transform(data_array)
+            
+            # 创建检测器
+            detector_class = self.available_algorithms[algorithm]
+            
+            # 根据算法设置参数
+            detector_params = {'contamination': contamination}
+            if algorithm == 'isolation_forest':
+                detector_params.update({
+                    'random_state': kwargs.get('random_state', 42),
+                    'n_estimators': kwargs.get('n_estimators', 100)
+                })
+            elif algorithm == 'ecod':
+                detector_params.update({
+                    'n_jobs': kwargs.get('n_jobs', 1)
+                })
+            elif algorithm == 'pca':
+                detector_params.update({
+                    'n_components': kwargs.get('n_components', None),
+                    'standardization': kwargs.get('standardization', True)
+                })
+            elif algorithm == 'mcd':
+                detector_params.update({
+                    'random_state': kwargs.get('random_state', 42)
+                })
+            elif algorithm == 'gmm':
+                detector_params.update({
+                    'n_components': kwargs.get('n_components', 1),
+                    'random_state': kwargs.get('random_state', 42)
+                })
+            
+            detector = detector_class(**detector_params)
+            
+            # 训练和预测
+            start_time = time.time()
+            detector.fit(data_scaled)
+            predictions = detector.predict(data_scaled)  # 0: normal, 1: anomaly
+            scores = detector.decision_scores_
+            execution_time = time.time() - start_time
+            
+            # 统计结果
+            anomaly_indices = np.where(predictions == 1)[0].tolist()
+            total_anomalies = len(anomaly_indices)
+            
+            return {
+                'status': 'success',
+                'algorithm': algorithm,
+                'total_points': len(data),
+                'anomaly_count': total_anomalies,
+                'anomaly_percentage': round((total_anomalies / len(data)) * 100, 2),
+                'predictions': predictions.tolist(),
+                'anomaly_scores': scores.tolist(),
+                'anomaly_indices': anomaly_indices,
+                'execution_time': round(execution_time, 4),
+                'contamination': contamination,
+                'parameters': detector_params
+            }
+            
+        except Exception as e:
+            logger.error(f"异常检测失败: {str(e)}")
+            return {
+                'status': 'error',
+                'error': str(e)
+            }
+    
+    def get_available_algorithms(self):
+        """获取可用算法列表"""
+        return {
+            'status': 'success',
+            'available': PYOD_AVAILABLE,
+            'algorithms': list(self.available_algorithms.keys()) if PYOD_AVAILABLE else []
+        }
+
+# 创建异常检测器实例
+anomaly_detector = AnomalyDetector()
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -927,12 +1058,146 @@ def eda_info():
         }
     })
 
+# ============ 异常检测 API 端点 ============
+
+@app.route('/anomaly/detect', methods=['POST'])
+def anomaly_detect():
+    """
+    通用异常检测API端点
+    支持多种PyOD算法
+    """
+    try:
+        data = request.get_json()
+        
+        # 验证必需参数
+        if 'data' not in data:
+            return jsonify({'error': '缺少data参数'}), 400
+            
+        input_data = data['data']
+        algorithm = data.get('algorithm', 'isolation_forest')
+        contamination = data.get('contamination', 0.1)
+        
+        # 验证参数
+        if not isinstance(input_data, list) or len(input_data) == 0:
+            return jsonify({'error': '数据格式错误或为空'}), 400
+            
+        if not (0.01 <= contamination <= 0.5):
+            return jsonify({'error': '污染率必须在0.01-0.5之间'}), 400
+        
+        # 其他算法参数
+        kwargs = {
+            'random_state': data.get('random_state', 42),
+            'n_estimators': data.get('n_estimators', 100),
+            'n_jobs': data.get('n_jobs', 1),
+            'n_components': data.get('n_components', None)
+        }
+        
+        # 执行异常检测
+        result = anomaly_detector.detect_anomalies(
+            input_data, 
+            algorithm=algorithm, 
+            contamination=contamination,
+            **kwargs
+        )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"异常检测API错误: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
+
+@app.route('/anomaly/isolation_forest', methods=['POST'])
+def anomaly_isolation_forest():
+    """
+    Isolation Forest专用端点
+    为前端提供简化的接口
+    """
+    try:
+        data = request.get_json()
+        
+        # 验证必需参数
+        if 'data' not in data:
+            return jsonify({'error': '缺少data参数'}), 400
+            
+        input_data = data['data']
+        contamination = data.get('contamination', 0.1)
+        random_state = data.get('random_state', 42)
+        
+        # 验证参数
+        if not isinstance(input_data, list) or len(input_data) == 0:
+            return jsonify({'error': '数据格式错误或为空'}), 400
+            
+        if not (0.01 <= contamination <= 0.5):
+            return jsonify({'error': '污染率必须在0.01-0.5之间'}), 400
+        
+        # 执行Isolation Forest检测
+        result = anomaly_detector.detect_anomalies(
+            input_data, 
+            algorithm='isolation_forest', 
+            contamination=contamination,
+            random_state=random_state
+        )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Isolation Forest API错误: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
+
+@app.route('/anomaly/algorithms', methods=['GET'])
+def anomaly_algorithms():
+    """获取可用的异常检测算法列表"""
+    return jsonify(anomaly_detector.get_available_algorithms())
+
+@app.route('/anomaly/info', methods=['GET'])
+def anomaly_info():
+    """获取异常检测功能信息"""
+    return jsonify({
+        'status': 'success',
+        'pyod_available': PYOD_AVAILABLE,
+        'available_algorithms': list(anomaly_detector.available_algorithms.keys()) if PYOD_AVAILABLE else [],
+        'endpoints': {
+            '/anomaly/detect': '通用异常检测',
+            '/anomaly/isolation_forest': 'Isolation Forest专用',
+            '/anomaly/algorithms': '获取可用算法',
+            '/anomaly/info': '获取异常检测功能信息'
+        },
+        'example_request': {
+            'isolation_forest': {
+                'data': '[[0.1], [0.2], [0.9], [0.15], ...]',
+                'contamination': 0.1,
+                'random_state': 42
+            },
+            'general_detection': {
+                'data': '[[val1, val2], [val1, val2], ...]',
+                'algorithm': 'isolation_forest',
+                'contamination': 0.1,
+                'random_state': 42
+            }
+        },
+        'supported_algorithms': {
+            'isolation_forest': 'Isolation Forest - 适用于单/多维数据',
+            'ecod': 'ECOD - 经验累积分布检测',
+            'pca': 'PCA - 主成分分析',
+            'mcd': 'MCD - 最小协方差行列式',
+            'gmm': 'GMM - 高斯混合模型'
+        }
+    })
+
 if __name__ == '__main__':
-    logger.info("启动 DeepFace API 服务器...")
+    logger.info("启动 DeepFace + PyOD API 服务器...")
     logger.info("服务器将在 http://localhost:5000 启动")
     logger.info("Health check: http://localhost:5000/health")
     logger.info("Test endpoint: http://localhost:5000/test")
     logger.info("Analyze endpoint: http://localhost:5000/analyze")
+    logger.info("EDA处理: http://localhost:5000/eda/info")
+    logger.info("异常检测: http://localhost:5000/anomaly/info")
     
     # 在启动时预热模型
     initialize_model()
