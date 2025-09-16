@@ -211,6 +211,26 @@
           </select>
         </div>
         
+        <!-- 区间检测参数 -->
+        <div style="display: flex; flex-direction: column; gap: 5px;">
+          <label style="color: #ccc; font-size: 12px;">🔶 区间参数</label>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <label style="color: #aaa; font-size: 11px; min-width: 50px;">最大间隔:</label>
+            <input id="maxGapParam" type="number" value="2.0" min="0.1" max="10" step="0.1" style="width: 60px; background: #444; color: #fff; border: 1px solid #666; padding: 3px; border-radius: 3px; font-size: 11px;">
+            <span style="color: #888; font-size: 11px;">秒</span>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <label style="color: #aaa; font-size: 11px; min-width: 50px;">最小时长:</label>
+            <input id="minDurationParam" type="number" value="1.0" min="0.1" max="30" step="0.1" style="width: 60px; background: #444; color: #fff; border: 1px solid #666; padding: 3px; border-radius: 3px; font-size: 11px;">
+            <span style="color: #888; font-size: 11px;">秒</span>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <label style="color: #aaa; font-size: 11px; min-width: 50px;">合并阈值:</label>
+            <input id="mergeThresholdParam" type="number" value="0.5" min="0" max="5" step="0.1" style="width: 60px; background: #444; color: #fff; border: 1px solid #666; padding: 3px; border-radius: 3px; font-size: 11px;">
+            <span style="color: #888; font-size: 11px;">秒</span>
+          </div>
+        </div>
+        
         <!-- 操作按钮 -->
         <div style="display: flex; flex-direction: column; gap: 5px;">
           <label style="color: #ccc; font-size: 12px;">操作</label>
@@ -221,6 +241,8 @@
         <div style="display: flex; flex-direction: column; gap: 5px;">
           <label style="color: #ccc; font-size: 12px;">显示</label>
           <button id="toggleAnomalyDisplay" disabled style="padding: 6px 12px; font-size: 12px; background: #ef4444; border: none; border-radius: 4px; color: white;">显示异常点</button>
+          <button id="toggleIntervalDisplay" disabled style="padding: 6px 12px; font-size: 12px; background: #8b5cf6; border: none; border-radius: 4px; color: white;">🔶 显示异常区间</button>
+          <button id="recalculateIntervals" disabled style="padding: 6px 12px; font-size: 12px; background: #f59e0b; border: none; border-radius: 4px; color: white;">🔄 重新计算区间</button>
         </div>
       </div>
       
@@ -959,8 +981,185 @@
       }
     }
 
+    // 异常区间检测器类
+    class AnomalyIntervalDetector {
+        constructor() {
+            this.maxGap = 2.0;          // 最大聚类间隔（秒）
+            this.minDuration = 1.0;     // 最小区间长度（秒）
+            this.mergeThreshold = 0.5;  // 合并阈值（秒）
+        }
+
+        // 检测异常区间
+        detectIntervals(anomalies, options = {}) {
+            const config = { ...this, ...options };
+            
+            if (!anomalies || anomalies.length === 0) {
+                console.log('没有异常点数据，跳过区间检测');
+                return [];
+            }
+
+            console.log(`🔍 开始异常区间检测 - 输入${anomalies.length}个异常点`);
+            console.log(`参数: maxGap=${config.maxGap}s, minDuration=${config.minDuration}s, mergeThreshold=${config.mergeThreshold}s`);
+
+            // 1. 按时间排序
+            const sortedAnomalies = [...anomalies].sort((a, b) => a.time - b.time);
+            
+            // 2. 聚类相近的异常点
+            const clusters = this.clusterByTime(sortedAnomalies, config.maxGap);
+            console.log(`聚类结果: ${clusters.length}个聚类`);
+            
+            // 3. 转换为时间区间
+            const intervals = clusters.map(cluster => this.clusterToInterval(cluster, config));
+            
+            // 4. 过滤短区间
+            const validIntervals = intervals.filter(interval => {
+                const isValid = interval.duration >= config.minDuration;
+                if (!isValid) {
+                    console.log(`过滤短区间: ${interval.startTime.toFixed(1)}s-${interval.endTime.toFixed(1)}s (${interval.duration.toFixed(1)}s)`);
+                }
+                return isValid;
+            });
+            
+            // 5. 合并相邻区间
+            const mergedIntervals = this.mergeAdjacentIntervals(validIntervals, config.mergeThreshold);
+            
+            console.log(`✅ 区间检测完成: ${mergedIntervals.length}个有效区间`);
+            this.logIntervalSummary(mergedIntervals);
+            
+            return mergedIntervals;
+        }
+
+        // 按时间聚类
+        clusterByTime(anomalies, maxGap) {
+            const clusters = [];
+            let currentCluster = [anomalies[0]];
+            
+            for (let i = 1; i < anomalies.length; i++) {
+                const prevTime = anomalies[i-1].time;
+                const currTime = anomalies[i].time;
+                const timeGap = currTime - prevTime;
+                
+                if (timeGap <= maxGap) {
+                    currentCluster.push(anomalies[i]);
+                } else {
+                    clusters.push([...currentCluster]);
+                    currentCluster = [anomalies[i]];
+                }
+            }
+            
+            clusters.push(currentCluster);
+            return clusters;
+        }
+
+        // 将聚类转换为区间
+        clusterToInterval(cluster, config) {
+            const times = cluster.map(point => point.time);
+            const scores = cluster.map(point => point.score || 0);
+            const values = cluster.map(point => point.value);
+            
+            const startTime = Math.min(...times);
+            const endTime = Math.max(...times);
+            const duration = endTime - startTime;
+            
+            const avgScore = scores.reduce((sum, score) => sum + score, 0) / scores.length;
+            const maxScore = Math.max(...scores);
+            const avgValue = values.reduce((sum, val) => sum + val, 0) / values.length;
+            
+            // 计算置信度（基于异常点密度和分数）
+            const density = cluster.length / Math.max(duration, 0.1);
+            const confidence = Math.min(1.0, (density * 0.3 + (Math.abs(avgScore) / 3.0) * 0.7));
+            
+            return {
+                startTime: startTime,
+                endTime: endTime,
+                duration: duration,
+                anomalyCount: cluster.length,
+                avgScore: avgScore,
+                maxScore: maxScore,
+                avgValue: avgValue,
+                confidence: confidence,
+                type: this.classifyInterval(cluster, duration),
+                originalPoints: cluster
+            };
+        }
+
+        // 分类区间类型
+        classifyInterval(cluster, duration) {
+            if (duration < 1.0) return 'spike';        // 尖峰异常
+            if (duration < 3.0) return 'brief';        // 短暂异常
+            if (duration < 10.0) return 'short';       // 短期异常
+            if (duration < 30.0) return 'medium';      // 中期异常
+            return 'sustained';                        // 持续异常
+        }
+
+        // 合并相邻区间
+        mergeAdjacentIntervals(intervals, mergeThreshold) {
+            if (intervals.length <= 1) return intervals;
+            
+            intervals.sort((a, b) => a.startTime - b.startTime);
+            
+            const merged = [];
+            let current = { ...intervals[0] };
+            
+            for (let i = 1; i < intervals.length; i++) {
+                const next = intervals[i];
+                const gap = next.startTime - current.endTime;
+                
+                if (gap <= mergeThreshold) {
+                    // 合并区间
+                    current = {
+                        startTime: current.startTime,
+                        endTime: next.endTime,
+                        duration: next.endTime - current.startTime,
+                        anomalyCount: current.anomalyCount + next.anomalyCount,
+                        avgScore: (current.avgScore * current.anomalyCount + next.avgScore * next.anomalyCount) / 
+                                 (current.anomalyCount + next.anomalyCount),
+                        maxScore: Math.max(current.maxScore, next.maxScore),
+                        avgValue: (current.avgValue * current.anomalyCount + next.avgValue * next.anomalyCount) / 
+                                 (current.anomalyCount + next.anomalyCount),
+                        confidence: Math.max(current.confidence, next.confidence),
+                        type: 'merged',
+                        originalPoints: [...current.originalPoints, ...next.originalPoints]
+                    };
+                    console.log(`合并区间: ${current.startTime.toFixed(1)}s-${current.endTime.toFixed(1)}s (间隔${gap.toFixed(1)}s)`);
+                } else {
+                    merged.push(current);
+                    current = { ...next };
+                }
+            }
+            
+            merged.push(current);
+            return merged;
+        }
+
+        // 输出区间汇总信息
+        logIntervalSummary(intervals) {
+            if (intervals.length === 0) {
+                console.log('📊 区间汇总: 没有检测到有效的异常区间');
+                return;
+            }
+
+            console.log('� 异常区间汇总:');
+            intervals.forEach((interval, index) => {
+                console.log(`  � 区间${index + 1}: ` +
+                    `${interval.startTime.toFixed(1)}s-${interval.endTime.toFixed(1)}s ` +
+                    `(${interval.duration.toFixed(1)}s, ${interval.anomalyCount}点, ` +
+                    `置信度${(interval.confidence * 100).toFixed(0)}%)`);
+            });
+
+            // 统计信息
+            const totalDuration = intervals.reduce((sum, interval) => sum + interval.duration, 0);
+            const totalAnomalies = intervals.reduce((sum, interval) => sum + interval.anomalyCount, 0);
+            const avgConfidence = intervals.reduce((sum, interval) => sum + interval.confidence, 0) / intervals.length;
+
+            console.log(`📈 总体统计: ${intervals.length}个区间, 总时长${totalDuration.toFixed(1)}s, ` +
+                `${totalAnomalies}个异常点, 平均置信度${(avgConfidence * 100).toFixed(0)}%`);
+        }
+    }
+
     // 创建异常检测器实例
     const isolationForestDetector = new IsolationForestDetector();
+    const anomalyIntervalDetector = new AnomalyIntervalDetector();
 
     // 初始化情绪图表
     function initEmotionChart() {
@@ -3842,9 +4041,48 @@
         toggleBtn.disabled = false;
         toggleBtn.textContent = '显示异常点';
         
+        // 启用区间显示按钮
+        document.getElementById('toggleIntervalDisplay').disabled = false;
+        document.getElementById('recalculateIntervals').disabled = false;
+        
         // 自动显示异常点
         isolationForestDetector.showAnomalies();
         toggleBtn.textContent = '隐藏异常点';
+        
+        // 🔍 新增：异常区间检测
+        if (results.anomalies.length > 0) {
+          console.log('🔍 开始异常区间检测...');
+          
+          // 从UI获取区间检测参数
+          const intervalConfig = {
+            maxGap: parseFloat(document.getElementById('maxGapParam').value) || 2.0,
+            minDuration: parseFloat(document.getElementById('minDurationParam').value) || 1.0,
+            mergeThreshold: parseFloat(document.getElementById('mergeThresholdParam').value) || 0.5
+          };
+          
+          console.log(`区间参数: 最大间隔=${intervalConfig.maxGap}s, 最小时长=${intervalConfig.minDuration}s, 合并阈值=${intervalConfig.mergeThreshold}s`);
+          
+          // 检测异常区间
+          const intervals = anomalyIntervalDetector.detectIntervals(results.anomalies, intervalConfig);
+          
+          // 显示异常区间
+          if (intervals.length > 0) {
+            if (chart && typeof chart.showAnomalyIntervals === 'function') {
+              chart.showAnomalyIntervals(intervals);
+              console.log(`✨ 在图表上显示了 ${intervals.length} 个异常区间`);
+            } else {
+              console.warn('图表不支持显示异常区间功能');
+            }
+            
+            // 更新状态显示
+            statusEl.textContent = `检测完成 - ${results.sourceInfo} (🔶${intervals.length}个区间)`;
+            
+            // 保存区间结果
+            results.intervals = intervals;
+          } else {
+            console.log('未检测到有效的异常区间');
+          }
+        }
         
         // 保存检测结果
         anomalyDetectionResults = results;
@@ -3855,6 +4093,13 @@
         statusEl.textContent = '检测失败: ' + error.message;
         statusEl.style.color = '#ef4444';
         resultsEl.style.display = 'none';
+        
+        // 重置按钮状态
+        document.getElementById('toggleIntervalDisplay').disabled = true;
+        document.getElementById('toggleIntervalDisplay').textContent = '🔶 显示异常区间';
+        document.getElementById('toggleIntervalDisplay').style.background = '#8b5cf6';
+        document.getElementById('recalculateIntervals').disabled = true;
+        
         console.error('异常检测错误:', error);
       } finally {
         runBtn.disabled = false;
@@ -3868,6 +4113,86 @@
       isolationForestDetector.toggleAnomalies();
       
       btn.textContent = showingAnomalies ? '隐藏异常点' : '显示异常点';
+    });
+
+    // 显示/隐藏异常区间按钮
+    let showingIntervals = false;
+    document.getElementById('toggleIntervalDisplay').addEventListener('click', () => {
+      const btn = document.getElementById('toggleIntervalDisplay');
+      
+      if (!anomalyDetectionResults || !anomalyDetectionResults.intervals) {
+        alert('请先运行异常检测并生成区间');
+        return;
+      }
+      
+      if (!chart || typeof chart.showAnomalyIntervals !== 'function') {
+        alert('当前图表不支持异常区间显示');
+        return;
+      }
+      
+      showingIntervals = !showingIntervals;
+      
+      if (showingIntervals) {
+        chart.showAnomalyIntervals(anomalyDetectionResults.intervals);
+        btn.textContent = '🔶 隐藏异常区间';
+        btn.style.background = '#7c3aed';
+        console.log(`🎨 显示 ${anomalyDetectionResults.intervals.length} 个异常区间`);
+      } else {
+        chart.hideAnomalyIntervals();
+        btn.textContent = '🔶 显示异常区间';
+        btn.style.background = '#8b5cf6';
+        console.log('🗑️ 隐藏异常区间');
+      }
+    });
+
+    // 重新计算异常区间按钮
+    document.getElementById('recalculateIntervals').addEventListener('click', () => {
+      if (!anomalyDetectionResults || !anomalyDetectionResults.anomalies) {
+        alert('请先运行异常检测');
+        return;
+      }
+
+      const btn = document.getElementById('recalculateIntervals');
+      const originalText = btn.textContent;
+      
+      try {
+        btn.disabled = true;
+        btn.textContent = '🔄 计算中...';
+        
+        // 从UI获取当前参数
+        const intervalConfig = {
+          maxGap: parseFloat(document.getElementById('maxGapParam').value) || 2.0,
+          minDuration: parseFloat(document.getElementById('minDurationParam').value) || 1.0,
+          mergeThreshold: parseFloat(document.getElementById('mergeThresholdParam').value) || 0.5
+        };
+        
+        console.log(`🔄 重新计算区间，参数: 最大间隔=${intervalConfig.maxGap}s, 最小时长=${intervalConfig.minDuration}s, 合并阈值=${intervalConfig.mergeThreshold}s`);
+        
+        // 重新检测异常区间
+        const intervals = anomalyIntervalDetector.detectIntervals(anomalyDetectionResults.anomalies, intervalConfig);
+        
+        // 更新结果
+        anomalyDetectionResults.intervals = intervals;
+        
+        // 如果当前正在显示区间，则更新显示
+        if (showingIntervals && chart && typeof chart.showAnomalyIntervals === 'function') {
+          chart.hideAnomalyIntervals();
+          chart.showAnomalyIntervals(intervals);
+        }
+        
+        // 更新状态
+        const statusEl = document.getElementById('anomalyDetectionStatus');
+        statusEl.textContent = `检测完成 - ${anomalyDetectionResults.sourceInfo} (🔶${intervals.length}个区间)`;
+        
+        console.log(`✅ 重新计算完成: ${intervals.length} 个异常区间`);
+        
+      } catch (error) {
+        console.error('重新计算区间失败:', error);
+        alert('重新计算失败: ' + error.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
     });
     
     // 步骤1: 去伪迹
@@ -4241,14 +4566,18 @@
       // 清除异常检测结果
       anomalyDetectionResults = null;
       showingAnomalies = false;
+      showingIntervals = false;
       if (isolationForestDetector) {
         isolationForestDetector.results = null;
         isolationForestDetector.hideAnomalies();
       }
       
-      // 清除图表上的ML异常点
+      // 清除图表上的ML异常点和异常区间
       if (chart) {
         chart.hideMLAnomalies();
+        if (typeof chart.hideAnomalyIntervals === 'function') {
+          chart.hideAnomalyIntervals();
+        }
       }
       
       // 重置异常检测UI
@@ -4257,6 +4586,10 @@
       document.getElementById('anomalyDetectionResults').style.display = 'none';
       document.getElementById('toggleAnomalyDisplay').disabled = true;
       document.getElementById('toggleAnomalyDisplay').textContent = '显示异常点';
+      document.getElementById('toggleIntervalDisplay').disabled = true;
+      document.getElementById('toggleIntervalDisplay').textContent = '🔶 显示异常区间';
+      document.getElementById('toggleIntervalDisplay').style.background = '#8b5cf6';
+      document.getElementById('recalculateIntervals').disabled = true;
       
       // 隐藏导数曲线
       chart.toggleDerivativeDisplay(false);

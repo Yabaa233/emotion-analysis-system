@@ -586,6 +586,73 @@ class VAChart {
     this._chart.update('none');
   }
 
+  // 显示异常区间（作为半透明背景区域）
+  showAnomalyIntervals(intervals, options = {}) {
+    console.log('🔍 VAChart.showAnomalyIntervals 被调用:', intervals.length, '个异常区间');
+    
+    if (!intervals || intervals.length === 0) {
+      console.log('没有异常区间数据，跳过显示');
+      return;
+    }
+
+    // 统一样式配置 - 使用紫色避免与橙色GSR冲突
+    const config = {
+      color: 'rgba(139, 92, 246, 0.3)',    // 紫色背景
+      borderColor: '#8b5cf6',              // 紫色边框
+      borderWidth: 2,
+      ...options
+    };
+
+    // 先移除之前的异常区间
+    this.hideAnomalyIntervals();
+
+    // 合并所有区间数据到一个数据集中，这样图例只显示一个条目
+    const allIntervalData = [];
+    
+    intervals.forEach((interval, index) => {
+      // 为每个区间添加矩形数据点
+      allIntervalData.push(
+        { x: interval.startTime, y: -1 },
+        { x: interval.startTime, y: 1 },
+        { x: interval.endTime, y: 1 },
+        { x: interval.endTime, y: -1 },
+        { x: interval.startTime, y: null } // 分隔不同区间
+      );
+      console.log(`🔶 添加异常区间${index + 1}: ${interval.startTime.toFixed(1)}s-${interval.endTime.toFixed(1)}s`);
+    });
+
+    // 创建单一数据集包含所有区间
+    const dataset = {
+      label: '🔶 异常区间',
+      data: allIntervalData,
+      fill: true,
+      backgroundColor: config.color,
+      borderColor: config.borderColor,
+      borderWidth: config.borderWidth,
+      pointRadius: 0,
+      showLine: true,
+      lineTension: 0
+    };
+
+    this._datasets.push(dataset);
+
+    // 更新图表
+    this._chart.data.datasets = this._datasets;
+    this._chart.update('active');
+
+    console.log(`✅ 显示了 ${intervals.length} 个异常区间`);
+  }
+
+  // 隐藏异常区间
+  hideAnomalyIntervals() {
+    // 移除异常区间数据集
+    this._datasets = this._datasets.filter(ds => !ds.label.includes('异常区间'));
+    this._chart.data.datasets = this._datasets;
+    
+    console.log('🗑️ 已移除所有异常区间');
+    this._chart.update('none');
+  }
+
 }
 
 function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
