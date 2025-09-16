@@ -125,20 +125,6 @@ class VAChart {
         showLine: true,
         yAxisID: 'y-axis-ppg',
         hidden: true // 默认隐藏
-      },
-      {
-        label: 'Anomalies (NETS)',
-        fill: false,
-        borderWidth: 0,
-        borderColor: '#ff4444',
-        backgroundColor: '#ff4444',
-        data: [],
-        lineTension: 0,
-        pointRadius: 8,
-        pointHoverRadius: 10,
-        showLine: false,
-        yAxisID: 'y-axis-gsr',
-        hidden: true // 默认隐藏
       }
     ];
 
@@ -201,7 +187,7 @@ class VAChart {
     Chart.defaults.global.defaultFontColor = "#fff";
 
     this._chart = new Chart(ctx, config);
-    this._datasets = datasets;   // 0: Valence, 1: Arousal, 2: No-face, 3: Marker, 4: Valence_dt, 5: Arousal_dt, 6: Rise Events, 7: Fall Events, 8: GSR, 9: PPG, 10: Anomalies
+    this._datasets = datasets;   // 0: Valence, 1: Arousal, 2: No-face, 3: Marker, 4: Valence_dt, 5: Arousal_dt, 6: Rise Events, 7: Fall Events, 8: GSR, 9: PPG
     this._config = config;
 
     this._noDataTime = null;
@@ -484,96 +470,6 @@ class VAChart {
     this._chart.update();
   }
 
-  // 显示异常点
-  showAnomalies(anomalyPoints, options = {}) {
-    console.log('showAnomalies called with', anomalyPoints.length, 'points');
-    console.log('anomalyPoints sample:', anomalyPoints.slice(0, 3));
-    console.log('datasets count:', this._datasets.length);
-    console.log('dataset[10] exists:', !!this._datasets[10]);
-    
-    if (!this._datasets[10]) {
-      console.error('Dataset[10] (异常点数据集) 不存在');
-      return;
-    }
-    
-    const { color = '#ff4444', size = 8 } = options;
-    
-    // 更新异常点数据
-    this._datasets[10].data = anomalyPoints;
-    this._datasets[10].backgroundColor = color;
-    this._datasets[10].borderColor = color;
-    this._datasets[10].pointRadius = size;
-    this._datasets[10].pointHoverRadius = size + 2;
-    
-    // 显示异常点
-    const meta = this._chart.getDatasetMeta(10);
-    console.log('异常点数据集meta:', meta);
-    console.log('meta.hidden before:', meta.hidden);
-    meta.hidden = false;
-    console.log('meta.hidden after:', meta.hidden);
-    
-    console.log('异常点数据已更新:', this._datasets[10].data.length, '个点');
-    console.log('异常点数据集配置:', {
-      yAxisID: this._datasets[10].yAxisID,
-      pointRadius: this._datasets[10].pointRadius,
-      backgroundColor: this._datasets[10].backgroundColor
-    });
-    this._chart.update();
-  }
-
-  // 清除异常点
-  clearAnomalies() {
-    if (this._datasets[10]) {
-      this._datasets[10].data = [];
-      const meta = this._chart.getDatasetMeta(10);
-      meta.hidden = true;
-      this._chart.update();
-    }
-  }
-
-  // 显示熵值曲线
-  showEntropyChart(entropyData) {
-    if (!this._datasets[11]) return;
-    
-    this._datasets[11].data = entropyData;
-    
-    // 显示熵值曲线和其Y轴
-    const meta = this._chart.getDatasetMeta(11);
-    meta.hidden = false;
-    this._config.options.scales.yAxes[3].display = true; // 显示熵值Y轴
-    
-    this._chart.update();
-  }
-
-  // 清除熵值曲线
-  clearEntropyChart() {
-    if (this._datasets[11]) {
-      this._datasets[11].data = [];
-      const meta = this._chart.getDatasetMeta(11);
-      meta.hidden = true;
-      this._config.options.scales.yAxes[3].display = false; // 隐藏熵值Y轴
-      this._chart.update();
-    }
-  }
-
-  // 切换异常点显示
-  toggleAnomalyDisplay(show) {
-    if (this._datasets[10]) {
-      const meta = this._chart.getDatasetMeta(10);
-      meta.hidden = !show;
-      this._chart.update();
-    }
-  }
-
-  // 切换熵值曲线显示
-  toggleEntropyDisplay(show) {
-    if (this._datasets[11]) {
-      const meta = this._chart.getDatasetMeta(11);
-      meta.hidden = !show;
-      this._config.options.scales.yAxes[3].display = show; // 控制熵值Y轴显示
-      this._chart.update();
-    }
-  }
 }
 
 function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
