@@ -125,6 +125,20 @@ class VAChart {
         showLine: true,
         yAxisID: 'y-axis-ppg',
         hidden: true // 默认隐藏
+      },
+      {
+        label: 'Manual Anomaly Marks',
+        fill: false,
+        borderWidth: 3,
+        backgroundColor: '#ff4444',
+        borderColor: '#cc0000',
+        data: [],
+        lineTension: 0,
+        pointRadius: 8,
+        pointStyle: 'star',
+        pointHoverRadius: 12,
+        showLine: false,
+        hidden: false // 默认显示
       }
     ];
 
@@ -468,6 +482,38 @@ class VAChart {
     if (this._datasets[8]) this._datasets[8].data = [];
     if (this._datasets[9]) this._datasets[9].data = [];
     this._chart.update();
+  }
+
+  // 更新异常标记显示
+  updateAnomalyMarks(anomalyMarks) {
+    console.log('🎯 VAChart.updateAnomalyMarks 被调用:', anomalyMarks);
+    
+    if (!this._datasets[10]) {
+      console.warn('❌ 异常标记数据集不存在');
+      return;
+    }
+    
+    // 清空现有异常标记
+    this._datasets[10].data = [];
+    
+    // 添加新的异常标记
+    anomalyMarks.forEach(mark => {
+      this._datasets[10].data.push({
+        x: mark.time,
+        y: mark.valence
+      });
+    });
+    
+    console.log(`⭐ 已更新 ${anomalyMarks.length} 个异常标记到图表`);
+    this._chart.update();
+  }
+
+  // 清除异常标记
+  clearAnomalyMarks() {
+    if (this._datasets[10]) {
+      this._datasets[10].data = [];
+      this._chart.update();
+    }
   }
 
 }

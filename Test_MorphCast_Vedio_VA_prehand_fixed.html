@@ -146,6 +146,11 @@
         <label style="color: #ccc; font-size: 12px;">数据处理</label>
         <button id="convertToXdfBtn" disabled style="padding: 6px 12px; font-size: 12px; background: #4caf50; border: none; border-radius: 4px; color: white; cursor: pointer;">转换并导出XDF</button>
       </div>
+      
+      <!-- 异常标记状态 -->
+      <div style="display: flex; flex-direction: column; gap: 5px;">
+        <span id="anomalyMarkingStatus" style="color: #4caf50; font-size: 12px; font-weight: bold;">🎯 Ctrl+点击VA图表标记异常点 (0个标记)</span>
+      </div>
     </div>
   </div>
 
@@ -510,6 +515,163 @@
     const xdfInput = document.getElementById('xdfInput');
     const frameIntervalInput = document.getElementById('frameInterval');
     const statusEl = document.getElementById('status');
+
+    // ===== 异常标记功能 =====
+    let manualAnomalyMarks = [];
+
+    // 添加异常标记
+    function addAnomalyMark(time, valence) {
+      console.log(`🎯 尝试添加异常标记: 时间=${time.toFixed(3)}s, valence=${valence.toFixed(3)}`);
+      console.log(`📊 当前已有标记数量: ${manualAnomalyMarks.length}`);
+      
+      const existingIndex = manualAnomalyMarks.findIndex(mark => 
+        Math.abs(mark.time - time) < 0.1
+      );
+      
+      if (existingIndex === -1) {
+        const newMark = {
+          time: time,
+          valence: valence,
+          marked: true,
+          markTime: Date.now()
+        };
+        
+        manualAnomalyMarks.push(newMark);
+        console.log(`✅ 成功添加异常标记:`, newMark);
+        console.log(`📈 新的标记总数: ${manualAnomalyMarks.length}`);
+        
+        updateAnomalyMarkingStatus();
+        updateChartAnomalyMarks();
+      } else {
+        console.log(`⚠️ 时间 ${time.toFixed(3)}s 已有异常标记，跳过添加`);
+        console.log(`🔍 现有标记:`, manualAnomalyMarks[existingIndex]);
+      }
+    }
+
+    // 移除异常标记
+    function removeAnomalyMark(time) {
+      console.log(`🗑️ 尝试移除异常标记: 时间=${time.toFixed(3)}s`);
+      console.log(`📊 移除前标记数量: ${manualAnomalyMarks.length}`);
+      console.log(`📋 当前所有标记的时间:`, manualAnomalyMarks.map(mark => mark.time.toFixed(3)));
+      
+      // 寻找匹配的标记
+      let bestMatch = null;
+      let bestDistance = Infinity;
+      let bestIndex = -1;
+      
+      manualAnomalyMarks.forEach((mark, index) => {
+        const distance = Math.abs(mark.time - time);
+        console.log(`🔍 检查标记${index}: 时间=${mark.time.toFixed(3)}s, 距离=${distance.toFixed(3)}s`);
+        
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestMatch = mark;
+          bestIndex = index;
+        }
+      });
+      
+      console.log(`🎯 最佳匹配: 索引=${bestIndex}, 距离=${bestDistance.toFixed(3)}s, 阈值=0.1s`);
+      
+      if (bestIndex !== -1 && bestDistance < 0.1) {
+        const removed = manualAnomalyMarks.splice(bestIndex, 1)[0];
+        console.log(`✅ 成功移除异常标记:`, removed);
+        console.log(`📉 新的标记总数: ${manualAnomalyMarks.length}`);
+        
+        updateAnomalyMarkingStatus();
+        updateChartAnomalyMarks();
+        return true;
+      } else if (bestIndex !== -1 && bestDistance < 2.0) {
+        // 如果在2秒范围内有标记，询问用户是否要移除
+        const removed = manualAnomalyMarks.splice(bestIndex, 1)[0];
+        console.log(`⚠️ 扩大范围移除异常标记 (距离${bestDistance.toFixed(3)}s):`, removed);
+        console.log(`📉 新的标记总数: ${manualAnomalyMarks.length}`);
+        
+        updateAnomalyMarkingStatus();
+        updateChartAnomalyMarks();
+        return true;
+      } else {
+        console.log(`❌ 未找到可移除的标记: 最佳距离${bestDistance.toFixed(3)}s > 阈值2.0s`);
+        console.log(`💡 提示: 请点击更接近现有异常标记的位置`);
+        return false;
+      }
+    }
+
+    // 更新状态显示
+    function updateAnomalyMarkingStatus() {
+      const status = document.getElementById('anomalyMarkingStatus');
+      const count = manualAnomalyMarks.length;
+      
+      status.textContent = `🎯 Ctrl+点击VA图表标记异常点 (${count}个标记)`;
+      status.style.color = count > 0 ? '#4caf50' : '#888';
+      
+      console.log(`📊 异常标记状态更新: ${count}个标记`);
+      
+      // 检查是否应该启用XDF导出按钮
+      updateXDFExportButtonState();
+      updateEmotionXDFExportButtonState();
+    }
+
+    // 更新XDF导出按钮状态
+    function updateXDFExportButtonState() {
+      const hasGSR = physiologicalData.gsr && physiologicalData.gsr.length > 0;
+      const hasPPG = physiologicalData.ppg && physiologicalData.ppg.length > 0;
+      const hasAnomalies = manualAnomalyMarks && manualAnomalyMarks.length > 0;
+      const hasEmotionData = dataLog && dataLog.some(record => record.face && isFinite(record.valence));
+      
+      const shouldEnable = hasGSR || hasPPG || hasAnomalies || hasEmotionData;
+      
+      const btnElement = document.getElementById('convertToXdfBtn');
+      if (btnElement) {
+        btnElement.disabled = !shouldEnable;
+        
+        console.log(`🔄 XDF导出按钮状态更新:`, {
+          启用: shouldEnable,
+          GSR数据: hasGSR,
+          PPG数据: hasPPG,
+          异常标记: hasAnomalies,
+          情绪数据: hasEmotionData
+        });
+      }
+    }
+
+    // 更新情绪数据XDF导出按钮状态
+    function updateEmotionXDFExportButtonState() {
+      const hasEmotionData = dataLog && dataLog.length > 0;
+      const hasAnomalies = manualAnomalyMarks && manualAnomalyMarks.length > 0;
+      
+      const shouldEnable = hasEmotionData || hasAnomalies;
+      
+      const btnElement = document.getElementById('downloadBtn');
+      if (btnElement) {
+        btnElement.disabled = !shouldEnable;
+        
+        console.log(`🔄 情绪XDF导出按钮状态更新:`, {
+          启用: shouldEnable,
+          情绪数据: hasEmotionData,
+          异常标记: hasAnomalies
+        });
+      }
+    }
+
+    // 更新图表中的异常标记显示
+    function updateChartAnomalyMarks() {
+      console.log(`🔄 更新图表异常标记显示, 标记数量: ${manualAnomalyMarks.length}`);
+      console.log(`📋 当前异常标记列表:`, manualAnomalyMarks);
+      
+      if (typeof chart !== 'undefined') {
+        console.log(`✅ chart对象存在, 类型: ${typeof chart}`);
+        
+        if (chart.updateAnomalyMarks) {
+          console.log(`✅ chart.updateAnomalyMarks方法存在，调用更新`);
+          chart.updateAnomalyMarks(manualAnomalyMarks);
+        } else {
+          console.log(`❌ chart.updateAnomalyMarks方法不存在`);
+          console.log(`🔍 chart对象可用方法:`, Object.getOwnPropertyNames(chart));
+        }
+      } else {
+        console.log(`❌ chart对象未定义`);
+      }
+    }
 
     // 隐藏抓帧画布（分析阶段用）
     const grabCanvas = document.createElement('canvas');
@@ -975,21 +1137,29 @@
       }
     }
 
-    // 将生理信号数据转换为XDF格式
+    // 将生理信号和异常标记数据转换为XDF格式
     function convertPhysiologicalToXDF(gsrData, ppgData) {
+      const hasGSR = gsrData && gsrData.length > 0;
+      const hasPPG = ppgData && ppgData.length > 0;
+      const hasAnomalies = manualAnomalyMarks && manualAnomalyMarks.length > 0;
+      
       const xdfData = {
         "info": {
           "version": "1.0",
           "created": new Date().toISOString(),
-          "software": "EmotionAnalysisApp_GSR_Extension",
-          "source": "Shimmer_Sensor",
-          "description": "GSR and PPG data from Shimmer wearable sensor"
+          "software": "EmotionAnalysisApp_Manual_Annotation",
+          "source": hasGSR || hasPPG ? "Shimmer_Sensor_With_Manual_Annotation" : "Manual_Annotation_Only",
+          "description": hasAnomalies ? 
+            `${hasGSR || hasPPG ? 'GSR and PPG data from Shimmer sensor with' : 'Only'} manual anomaly annotations` :
+            "GSR and PPG data from Shimmer wearable sensor"
         },
         "streams": []
       };
 
+      console.log(`📦 创建XDF数据包: GSR=${hasGSR}, PPG=${hasPPG}, 异常标记=${hasAnomalies}`);
+
       // GSR数据流
-      if (gsrData.length > 0) {
+      if (hasGSR) {
         const gsrStream = {
           "info": {
             "name": "Shimmer_GSR",
@@ -1023,7 +1193,7 @@
       }
 
       // PPG数据流
-      if (ppgData.length > 0) {
+      if (hasPPG) {
         const ppgStream = {
           "info": {
             "name": "Shimmer_PPG",
@@ -1054,6 +1224,46 @@
           "time_stamps": ppgData.map(d => d.time)
         };
         xdfData.streams.push(ppgStream);
+      }
+
+      // 手动异常标记数据流
+      if (manualAnomalyMarks && manualAnomalyMarks.length > 0) {
+        const anomalyStream = {
+          "info": {
+            "name": "ManualAnomalyMarks",
+            "type": "Annotations",
+            "channel_count": 2,
+            "nominal_srate": 0, // 事件流，非周期采样
+            "channel_format": "float32",
+            "source_id": "EmotionAnalysisApp_Manual",
+            "channels": [
+              {
+                "label": "AnomalyFlag",
+                "unit": "binary",
+                "type": "Marker",
+                "description": "Manual anomaly detection flag (1=anomaly, 0=normal)"
+              },
+              {
+                "label": "ValenceValue",
+                "unit": "normalized",
+                "type": "Emotion",
+                "description": "Valence value at anomaly point (-1 to 1)"
+              }
+            ],
+            "manufacturer": "EmotionAnalysisApp",
+            "caps": ["ManualAnnotation"],
+            "desc": {
+              "device": {
+                "name": "Manual Annotation Tool",
+                "type": "software_annotation",
+                "version": "1.0"
+              }
+            }
+          },
+          "time_series": manualAnomalyMarks.map(mark => [1, mark.valence]), // 异常标记=1，valence值
+          "time_stamps": manualAnomalyMarks.map(mark => mark.time)
+        };
+        xdfData.streams.push(anomalyStream);
       }
 
       return xdfData;
@@ -1202,6 +1412,56 @@
           xdfData.streams.push(emotionStream);
         }
 
+        // 手动异常标记数据流
+        if (typeof manualAnomalyMarks !== 'undefined' && manualAnomalyMarks.length > 0) {
+          console.log(`📤 准备导出异常标记数据流，包含 ${manualAnomalyMarks.length} 个标记:`, manualAnomalyMarks);
+          
+          const anomalyStream = {
+            info: {
+              name: 'ManualAnomalyMarks',
+              type: 'Annotations',
+              channel_count: 2,
+              nominal_srate: 0.0,
+              channel_format: 'float32',
+              source_id: `AnomalyMarks_${this.startTime}`,
+              uid: this.generateUID(),
+              created_at: (Date.now() / 1000.0),
+              hostname: window.location.hostname || 'localhost',
+              desc: {
+                acquisition: {
+                  manufacturer: 'EmotionAnalysisApp',
+                  model: 'Manual_Annotation_Tool_v1.0'
+                },
+                channels: {
+                  channel: [
+                    {
+                      label: 'AnomalyFlag',
+                      unit: 'binary',
+                      type: 'Marker'
+                    },
+                    {
+                      label: 'ValenceValue',
+                      unit: 'normalized',
+                      type: 'Emotion'
+                    }
+                  ]
+                }
+              }
+            },
+            time_series: [],
+            time_stamps: []
+          };
+
+          // 添加异常标记数据
+          manualAnomalyMarks.forEach(mark => {
+            anomalyStream.time_series.push([1, mark.valence]); // 异常标记=1，valence值
+            anomalyStream.time_stamps.push(mark.time);
+          });
+
+          xdfData.streams.push(anomalyStream);
+          console.log(`📦 XDF导出包含 ${manualAnomalyMarks.length} 个异常标记`);
+        }
+
       return xdfData;
     }
 
@@ -1220,10 +1480,17 @@
           // 找到VA和情绪数据流
           const vaStream = xdfData.streams.find(s => s.info.name === 'EmotionAnalysis_VA');
           const emotionStream = xdfData.streams.find(s => s.info.name === 'EmotionAnalysis_Emotions');
+          const anomalyStream = xdfData.streams.find(s => s.info.name === 'ManualAnomalyMarks');
 
           if (!vaStream) {
             throw new Error('No VA data stream found in XDF file');
           }
+
+          console.log(`📥 XDF导入检测到的数据流:`, {
+            VA数据流: !!vaStream,
+            情绪数据流: !!emotionStream,
+            异常标记流: !!anomalyStream
+          });
 
           // 重建所有数据点（包括无人脸的）
           vaStream.time_series.forEach((vaData, index) => {
@@ -1275,6 +1542,37 @@
 
             newDataLog.push(dataPoint);
           });
+
+          // 处理异常标记数据流
+          if (anomalyStream) {
+            console.log(`🎯 发现异常标记数据流，包含 ${anomalyStream.time_series.length} 个标记`);
+            
+            // 清空现有异常标记
+            manualAnomalyMarks.splice(0, manualAnomalyMarks.length);
+            
+            // 导入异常标记
+            anomalyStream.time_series.forEach((markData, index) => {
+              const timestamp = anomalyStream.time_stamps[index];
+              const valenceValue = markData[1]; // 第二个通道是valence值
+              
+              manualAnomalyMarks.push({
+                time: timestamp,
+                valence: valenceValue,
+                marked: true,
+                markTime: Date.now()
+              });
+            });
+            
+            console.log(`✅ 已导入 ${manualAnomalyMarks.length} 个异常标记:`, manualAnomalyMarks);
+            
+            // 更新异常标记状态显示
+            updateAnomalyMarkingStatus();
+            
+            // 更新图表中的异常标记
+            updateChartAnomalyMarks();
+          } else {
+            console.log(`ℹ️ XDF文件中未发现异常标记数据流`);
+          }
 
           return newDataLog;
         } catch (error) {
@@ -1449,12 +1747,14 @@
 
     // 转换并导出XDF按钮
     document.getElementById('convertToXdfBtn').addEventListener('click', () => {
-      // 检查是否有生理信号数据
+      // 检查是否有可导出的数据
       const hasGSR = physiologicalData.gsr && physiologicalData.gsr.length > 0;
       const hasPPG = physiologicalData.ppg && physiologicalData.ppg.length > 0;
+      const hasAnomalies = manualAnomalyMarks && manualAnomalyMarks.length > 0;
+      const hasEmotionData = dataLog && dataLog.some(record => record.face && isFinite(record.valence));
       
-      if (!hasGSR && !hasPPG) {
-        alert('请先导入生理信号数据');
+      if (!hasGSR && !hasPPG && !hasAnomalies && !hasEmotionData) {
+        alert('请先导入数据或添加异常标记');
         return;
       }
       
@@ -1464,6 +1764,11 @@
         // 如果已经有转换好的XDF数据，直接使用；否则重新转换
         if (window.convertedPhysiologicalXDF) {
           xdfData = window.convertedPhysiologicalXDF;
+          
+          // 如果有新的异常标记，需要更新XDF数据
+          if (manualAnomalyMarks && manualAnomalyMarks.length > 0) {
+            xdfData = convertPhysiologicalToXDF(physiologicalData.gsr || [], physiologicalData.ppg || []);
+          }
         } else {
           // 从当前数据重新生成XDF格式
           xdfData = convertPhysiologicalToXDF(physiologicalData.gsr || [], physiologicalData.ppg || []);
@@ -1475,7 +1780,8 @@
         
         exportPhysiologicalXDF(xdfData, filename);
         
-        alert(`导出成功！\n文件名: ${filename}\n- 数据流: ${xdfData.streams.length} 个\n- GSR: ${physiologicalData.gsr?.length || 0} 数据点\n- PPG: ${physiologicalData.ppg?.length || 0} 数据点`);
+        const anomalyCount = manualAnomalyMarks ? manualAnomalyMarks.length : 0;
+        alert(`导出成功！\n文件名: ${filename}\n- 数据流: ${xdfData.streams.length} 个\n- GSR: ${physiologicalData.gsr?.length || 0} 数据点\n- PPG: ${physiologicalData.ppg?.length || 0} 数据点\n- 手动异常标记: ${anomalyCount} 个`);
         
         console.log('XDF文件导出成功:', xdfData);
         
@@ -2602,7 +2908,9 @@
 
         analyzed = true;
         statusEl.textContent = `分析完成！共 ${dataLog.length} 点，用时: ${((performance.now() - startTime) / 1000).toFixed(1)}s`;
-        downloadBtn.disabled = dataLog.length === 0;
+        
+        // 更新导出按钮状态
+        updateEmotionXDFExportButtonState();
         
         // 保持分析按钮永久禁用，防止重复分析
         analyzeBtn.disabled = true;
@@ -2649,9 +2957,21 @@
     downloadBtn.onclick = () => {
       if (dataLog.length === 0) { alert('没有可导出的数据'); return; }
       
+      console.log(`📤 开始导出情绪XDF数据...`);
+      console.log(`📊 当前状态:`, {
+        数据点数量: dataLog.length,
+        异常标记数量: manualAnomalyMarks ? manualAnomalyMarks.length : 0,
+        情绪检测启用: emotionDetectionEnabled
+      });
+      
       try {
         // 使用XDF格式处理器导出
         const xdfData = xdfFormatter.exportToXDF(dataLog, emotionDetectionEnabled, emotionNames);
+        
+        console.log(`✅ XDF数据生成成功:`, {
+          数据流数量: xdfData.streams.length,
+          数据流名称: xdfData.streams.map(s => s.info.name)
+        });
         
         const xdfContent = JSON.stringify(xdfData, null, 2);
         const blob = new Blob([xdfContent], { type: 'application/json;charset=utf-8;' });
@@ -2784,6 +3104,10 @@
       if (emotionChart && emotionDetectionEnabled) {
         loadEmotionDataToChart();
       }
+      
+      // 更新XDF导出按钮状态
+      updateXDFExportButtonState();
+      updateEmotionXDFExportButtonState();
     }
 
     // 加载情绪数据到情绪图表
@@ -2968,10 +3292,78 @@
       reader.readAsText(file);
     };
 
-    // 点击标记点跳转视频
+    // 点击标记点跳转视频 + 异常标记功能
     chartCanvas.addEventListener('click', (evt) => {
+      console.log('🖱️ 图表点击事件触发');
+      console.log('🔍 事件详情:', {
+        ctrlKey: evt.ctrlKey,
+        shiftKey: evt.shiftKey,
+        button: evt.button,
+        clientX: evt.clientX,
+        clientY: evt.clientY
+      });
+      
+      // 异常标记模式处理 - 检测Ctrl+点击
+      if (evt.ctrlKey) {
+        console.log('🎯 检测到Ctrl+点击，进入异常标记模式');
+        
+        const t = chart.getTimeAtEvent(evt);
+        console.log(`📍 点击位置时间: ${t}`);
+        
+        if (t != null && isFinite(t)) {
+          console.log(`🔄 搜索最近的valence数据点，当前数据记录总数: ${dataLog.length}`);
+          
+          // 查找最接近的valence数据点
+          let closestPoint = null;
+          let minDistance = Infinity;
+          let validPointsCount = 0;
+          
+          for (const record of dataLog) {
+            if (record.face && isFinite(record.valence)) {
+              validPointsCount++;
+              const distance = Math.abs(record.time - t);
+              if (distance < minDistance && distance < 1.0) { // 1秒容差
+                minDistance = distance;
+                closestPoint = record;
+              }
+            }
+          }
+          
+          console.log(`📊 搜索结果: 有效valence数据点${validPointsCount}个, 最近距离${minDistance.toFixed(3)}s`);
+          console.log(`🔍 找到最近的数据点:`, closestPoint);
+          
+          if (closestPoint) {
+            if (evt.shiftKey) {
+              // Ctrl + Shift + 点击 = 移除标记
+              console.log('🗑️ Ctrl+Shift+点击 - 尝试移除异常标记');
+              removeAnomalyMark(closestPoint.time);
+            } else {
+              // Ctrl + 点击 = 添加标记
+              console.log('⭐ Ctrl+点击 - 尝试添加异常标记');
+              addAnomalyMark(closestPoint.time, closestPoint.valence);
+            }
+          } else {
+            console.log('❌ 未找到附近的有效valence数据点');
+            alert('未找到附近的有效valence数据点，请确保有情绪数据');
+          }
+          
+          evt.preventDefault();
+          return;
+        } else {
+          console.log('❌ 无法获取点击位置的时间');
+        }
+      } else {
+        console.log('📍 普通点击 - 执行时间跳转');
+      }
+      
+      // 原有的时间跳转功能
       const t = chart.getTimeAtEvent(evt);
-      if (t == null || !isFinite(t)) return;
+      if (t == null || !isFinite(t)) {
+        console.log('❌ 时间跳转失败: 无效时间');
+        return;
+      }
+      
+      console.log(`⏰ 时间跳转到: ${t.toFixed(3)}s`);
       video.currentTime = Math.max(0, t);
       chart.updatePlaybackMarker(t);
     });
@@ -2989,12 +3381,24 @@
 
     // 情绪图表点击跳转视频时间
     document.addEventListener('DOMContentLoaded', () => {
+      console.log('🚀 页面DOMContentLoaded事件触发');
+      console.log('🔧 开始初始化异常标记功能');
+      
+      // 初始化异常标记状态显示
+      updateAnomalyMarkingStatus();
+      
+      // 初始化XDF导出按钮状态
+      updateXDFExportButtonState();
+      updateEmotionXDFExportButtonState();
+      
       // 初始化 API 状态
       apiConnected = true; // MorphCast 默认可用
       updateApiStatus('MorphCast 已选择');
       
       // 初始化区域拖拽功能
       initRegionDragHandlers();
+      
+      console.log('🎯 异常标记功能已初始化完成');
       
       const emotionCanvas = document.getElementById('emotionChart');
       if (emotionCanvas) {
