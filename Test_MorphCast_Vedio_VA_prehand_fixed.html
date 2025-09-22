@@ -197,6 +197,7 @@
           <select id="anomalyDataSource" style="background: #444; color: #fff; border: 1px solid #666; padding: 5px; border-radius: 3px;">
             <option value="gsr">皮电数据 (GSR)</option>
             <option value="valence">效价数据 (Valence)</option>
+            <option value="combined">🔗 联合数据 (GSR + Valence)</option>
           </select>
         </div>
         
@@ -222,11 +223,6 @@
           <div style="display: flex; gap: 8px; align-items: center;">
             <label style="color: #aaa; font-size: 11px; min-width: 50px;">最小时长:</label>
             <input id="minDurationParam" type="number" value="1.0" min="0.1" max="30" step="0.1" style="width: 60px; background: #444; color: #fff; border: 1px solid #666; padding: 3px; border-radius: 3px; font-size: 11px;">
-            <span style="color: #888; font-size: 11px;">秒</span>
-          </div>
-          <div style="display: flex; gap: 8px; align-items: center;">
-            <label style="color: #aaa; font-size: 11px; min-width: 50px;">合并阈值:</label>
-            <input id="mergeThresholdParam" type="number" value="0.5" min="0" max="5" step="0.1" style="width: 60px; background: #444; color: #fff; border: 1px solid #666; padding: 3px; border-radius: 3px; font-size: 11px;">
             <span style="color: #888; font-size: 11px;">秒</span>
           </div>
         </div>
@@ -820,6 +816,23 @@
             sourceInfo = `Valence数据：${data.length}个数据点`;
             break;
             
+          case 'combined':
+            console.log('🔄 准备联合异常检测数据 (GSR + Valence)');
+            
+            // 使用数据对齐方法
+            const combinedData = this.alignAndCombineData();
+            
+            for (const item of combinedData) {
+              if (isFinite(item.gsr) && isFinite(item.valence)) {
+                data.push([item.gsr, item.valence]); // 二维特征向量
+                timestamps.push(item.time);
+              }
+            }
+            
+            sourceInfo = `联合数据：${data.length}个数据点 (GSR + Valence)`;
+            console.log(`✅ 联合数据准备完成: ${data.length}个二维特征向量`);
+            break;
+            
           default:
             throw new Error('未知的数据源');
         }
@@ -880,7 +893,7 @@
               anomalies: anomalyIndices.map(idx => ({
                 index: idx,
                 time: timestamps[idx],
-                value: data[idx][0], // 单维数据
+                value: dataSource === 'combined' ? data[idx] : data[idx][0], // 联合数据保留完整数组
                 score: anomalyScores[idx]
               })),
               sourceInfo: sourceInfo
@@ -903,10 +916,10 @@
       showAnomalies() {
         if (!this.results || !chart) return;
         
-        // 准备异常点数据
+        // 准备异常点数据，处理联合数据的Y值
         const anomalyPoints = this.results.anomalies.map(anomaly => ({
           x: anomaly.time,
-          y: anomaly.value,
+          y: this.getAnomalyYValue(anomaly),
           score: anomaly.score
         }));
         
@@ -926,19 +939,72 @@
         });
         
         // 根据数据源选择显示样式
-        const isGSR = this.results.dataSource === 'gsr';
-        const options = {
-          color: isGSR ? '#ff6b6b' : '#fbbf24',
-          size: isGSR ? 4 : 6, // GSR用更小的点，因为数据密集
-          label: 'ML异常点',
-          dataSource: this.results.dataSource.toUpperCase()
-        };
+        let options = {};
         
-        // 使用VAChart的新方法显示异常点
+        switch(this.results.dataSource) {
+          case 'gsr':
+            options = {
+              color: '#ff6b6b',
+              size: 4, // GSR用更小的点，因为数据密集
+              label: 'ML异常点(GSR)',
+              dataSource: 'GSR'
+            };
+            break;
+            
+          case 'valence':
+            options = {
+              color: '#fbbf24',
+              size: 6,
+              label: 'ML异常点(Valence)',
+              dataSource: 'VALENCE'
+            };
+            break;
+            
+          case 'combined':
+            options = {
+              color: '#8b5cf6', // 紫色表示联合检测
+              size: 8,
+              label: 'ML异常点(联合)',
+              dataSource: 'COMBINED'
+            };
+            break;
+            
+          default:
+            options = {
+              color: '#ff6b6b',
+              size: 6,
+              label: 'ML异常点',
+              dataSource: this.results.dataSource.toUpperCase()
+            };
+        }
+        
+        // 使用VAChart的方法显示异常点
         chart.showMLAnomalies(anomalyPoints, options);
         
         showingAnomalies = true;
-        console.log(`显示 ${anomalyPoints.length} 个${this.results.dataSource.toUpperCase()}异常点`);
+        console.log(`显示 ${anomalyPoints.length} 个${options.dataSource}异常点`);
+      }
+
+      // 获取异常点的Y值显示位置
+      getAnomalyYValue(anomaly) {
+        const dataSource = this.results.dataSource;
+        
+        switch(dataSource) {
+          case 'gsr':
+          case 'valence':
+            return anomaly.value;
+            
+          case 'combined':
+            // 对于联合数据，优先显示在Valence位置
+            // anomaly.value是二维数组 [gsr, valence]，我们取valence值
+            if (Array.isArray(anomaly.value) && anomaly.value.length >= 2) {
+              return anomaly.value[1]; // valence值
+            }
+            return 0;
+            
+          default:
+            return anomaly.value;
+        }
       }
 
       // 隐藏异常点
@@ -957,6 +1023,52 @@
         } else {
           this.showAnomalies();
         }
+      }
+
+      // 数据对齐和融合方法
+      alignAndCombineData() {
+        const gsrData = physiologicalData.gsr;
+        const valenceData = dataLog.filter(record => record.face && isFinite(record.valence));
+        
+        if (!gsrData || gsrData.length === 0) {
+          throw new Error('GSR数据为空，请先导入GSR数据');
+        }
+        if (!valenceData || valenceData.length === 0) {
+          throw new Error('Valence数据为空，请先进行情绪分析');
+        }
+        
+        console.log(`🔄 数据对齐开始: GSR ${gsrData.length}点, Valence ${valenceData.length}点`);
+        
+        const combinedData = [];
+        const tolerance = 0.5; // 500ms时间容差
+        
+        // 策略：以GSR数据为基准，匹配最近的Valence数据
+        for (const gsrPoint of gsrData) {
+          let closestValence = null;
+          let minTimeDiff = Infinity;
+          
+          for (const valencePoint of valenceData) {
+            const timeDiff = Math.abs(valencePoint.time - gsrPoint.time);
+            if (timeDiff < minTimeDiff && timeDiff <= tolerance) {
+              minTimeDiff = timeDiff;
+              closestValence = valencePoint;
+            }
+          }
+          
+          if (closestValence) {
+            combinedData.push({
+              time: gsrPoint.time,
+              gsr: gsrPoint.gsr,
+              valence: closestValence.valence,
+              timeDiff: minTimeDiff
+            });
+          }
+        }
+        
+        console.log(`✅ 数据对齐完成: ${combinedData.length}个有效数据点`);
+        console.log(`📊 平均时间差: ${(combinedData.reduce((sum, p) => sum + p.timeDiff, 0) / combinedData.length).toFixed(3)}s`);
+        
+        return combinedData;
       }
 
       // 检查API状态
@@ -986,7 +1098,6 @@
         constructor() {
             this.maxGap = 2.0;          // 最大聚类间隔（秒）
             this.minDuration = 1.0;     // 最小区间长度（秒）
-            this.mergeThreshold = 0.5;  // 合并阈值（秒）
         }
 
         // 检测异常区间
@@ -999,7 +1110,7 @@
             }
 
             console.log(`🔍 开始异常区间检测 - 输入${anomalies.length}个异常点`);
-            console.log(`参数: maxGap=${config.maxGap}s, minDuration=${config.minDuration}s, mergeThreshold=${config.mergeThreshold}s`);
+            console.log(`参数: maxGap=${config.maxGap}s, minDuration=${config.minDuration}s`);
 
             // 1. 按时间排序
             const sortedAnomalies = [...anomalies].sort((a, b) => a.time - b.time);
@@ -1010,23 +1121,22 @@
             
             // 3. 转换为时间区间
             const intervals = clusters.map(cluster => this.clusterToInterval(cluster, config));
+            console.log(`初始区间: ${intervals.length}个，平均长度${intervals.length > 0 ? (intervals.reduce((sum, i) => sum + i.duration, 0) / intervals.length).toFixed(2) : 0}s`);
             
             // 4. 过滤短区间
             const validIntervals = intervals.filter(interval => {
                 const isValid = interval.duration >= config.minDuration;
                 if (!isValid) {
-                    console.log(`过滤短区间: ${interval.startTime.toFixed(1)}s-${interval.endTime.toFixed(1)}s (${interval.duration.toFixed(1)}s)`);
+                    console.log(`过滤短区间: ${interval.startTime.toFixed(1)}s-${interval.endTime.toFixed(1)}s (${interval.duration.toFixed(1)}s < ${config.minDuration}s)`);
                 }
                 return isValid;
             });
             
-            // 5. 合并相邻区间
-            const mergedIntervals = this.mergeAdjacentIntervals(validIntervals, config.mergeThreshold);
+            console.log(`✅ 区间检测完成: ${validIntervals.length}个有效区间`);
+            console.log(`📈 处理效果: 原始${clusters.length}聚类 → 形成${intervals.length}区间 → 最终${validIntervals.length}有效区间`);
+            this.logIntervalSummary(validIntervals);
             
-            console.log(`✅ 区间检测完成: ${mergedIntervals.length}个有效区间`);
-            this.logIntervalSummary(mergedIntervals);
-            
-            return mergedIntervals;
+            return validIntervals;
         }
 
         // 按时间聚类
@@ -4056,11 +4166,10 @@
           // 从UI获取区间检测参数
           const intervalConfig = {
             maxGap: parseFloat(document.getElementById('maxGapParam').value) || 2.0,
-            minDuration: parseFloat(document.getElementById('minDurationParam').value) || 1.0,
-            mergeThreshold: parseFloat(document.getElementById('mergeThresholdParam').value) || 0.5
+            minDuration: parseFloat(document.getElementById('minDurationParam').value) || 1.0
           };
           
-          console.log(`区间参数: 最大间隔=${intervalConfig.maxGap}s, 最小时长=${intervalConfig.minDuration}s, 合并阈值=${intervalConfig.mergeThreshold}s`);
+          console.log(`区间参数: 最大间隔=${intervalConfig.maxGap}s, 最小时长=${intervalConfig.minDuration}s`);
           
           // 检测异常区间
           const intervals = anomalyIntervalDetector.detectIntervals(results.anomalies, intervalConfig);
@@ -4162,11 +4271,10 @@
         // 从UI获取当前参数
         const intervalConfig = {
           maxGap: parseFloat(document.getElementById('maxGapParam').value) || 2.0,
-          minDuration: parseFloat(document.getElementById('minDurationParam').value) || 1.0,
-          mergeThreshold: parseFloat(document.getElementById('mergeThresholdParam').value) || 0.5
+          minDuration: parseFloat(document.getElementById('minDurationParam').value) || 1.0
         };
         
-        console.log(`🔄 重新计算区间，参数: 最大间隔=${intervalConfig.maxGap}s, 最小时长=${intervalConfig.minDuration}s, 合并阈值=${intervalConfig.mergeThreshold}s`);
+        console.log(`🔄 重新计算区间，参数: 最大间隔=${intervalConfig.maxGap}s, 最小时长=${intervalConfig.minDuration}s`);
         
         // 重新检测异常区间
         const intervals = anomalyIntervalDetector.detectIntervals(anomalyDetectionResults.anomalies, intervalConfig);
