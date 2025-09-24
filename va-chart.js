@@ -429,7 +429,10 @@ class VAChart {
 
   // 更新GSR数据
   updateGSRData(gsrData) {
-    if (!this._datasets[8]) return;
+    if (!this._datasets[8]) {
+      console.warn('❌ GSR数据集[8]不存在');
+      return;
+    }
     
     const gsrPoints = [];
     for (const record of gsrData) {
@@ -438,8 +441,249 @@ class VAChart {
       }
     }
     
+    console.log(`🔄 VAChart.updateGSRData: 更新${gsrPoints.length}个GSR数据点`);
+    console.log(`🔍 GSR数据样本: [${gsrPoints.slice(0, 3).map(p => `(${p.x.toFixed(1)}, ${p.y.toFixed(3)})`).join(', ')}]`);
+    
+    // 计算GSR数据的范围
+    if (gsrPoints.length > 0) {
+      const gsrValues = gsrPoints.map(p => p.y);
+      const gsrMin = Math.min(...gsrValues);
+      const gsrMax = Math.max(...gsrValues);
+      console.log(`🔍 GSR数据范围: ${gsrMin.toFixed(3)} 到 ${gsrMax.toFixed(3)}`);
+      
+      // 获取右Y轴配置 - 适配旧版Chart.js格式
+      let rightYAxis = null;
+      
+      // 尝试新版格式
+      if (this._chart.options.scales && this._chart.options.scales['y1']) {
+        rightYAxis = this._chart.options.scales['y1'];
+        console.log(`🔍 找到新版右Y轴 (y1)`);
+      }
+      // 尝试旧版格式
+      else if (this._chart.options.scales && this._chart.options.scales.yAxes && this._chart.options.scales.yAxes.length > 1) {
+        rightYAxis = this._chart.options.scales.yAxes[1]; // 第二个Y轴
+        console.log(`🔍 找到旧版右Y轴 (yAxes[1])`);
+      }
+      // 如果只有一个Y轴，也尝试使用它
+      else if (this._chart.options.scales && this._chart.options.scales.yAxes && this._chart.options.scales.yAxes.length > 0) {
+        rightYAxis = this._chart.options.scales.yAxes[0]; // 使用唯一的Y轴
+        console.log(`🔍 使用主Y轴 (yAxes[0]) 显示GSR数据`);
+      }
+      
+      console.log(`🔍 右Y轴对象:`, rightYAxis);
+      
+      if (rightYAxis) {
+        // 保存原始范围用于调试
+        const oldMin = rightYAxis.ticks ? rightYAxis.ticks.min : rightYAxis.min;
+        const oldMax = rightYAxis.ticks ? rightYAxis.ticks.max : rightYAxis.max;
+        
+        // 检测是否为标准化数据 (均值接近0且范围较大)
+        const gsrMean = gsrValues.reduce((a, b) => a + b, 0) / gsrValues.length;
+        const isStandardizedData = Math.abs(gsrMean) < 0.1 && (gsrMax - gsrMin) > 5;
+        console.log(`🔍 GSR数据分析: 均值=${gsrMean.toFixed(3)}, 范围=${(gsrMax - gsrMin).toFixed(3)}, 标准化=${isStandardizedData}`);
+        
+        let newMin, newMax;
+        if (isStandardizedData) {
+          // 标准化数据：使用数据实际范围加边距
+          const padding = (gsrMax - gsrMin) * 0.1; // 10% 边距
+          newMin = gsrMin - padding;
+          newMax = gsrMax + padding;
+          console.log(`🔄 右Y轴使用标准化动态范围: [${oldMin}, ${oldMax}] → [${newMin.toFixed(3)}, ${newMax.toFixed(3)}]`);
+        } else {
+          // 原始数据：使用动态范围
+          const padding = (gsrMax - gsrMin) * 0.1; // 10% 边距
+          newMin = gsrMin - padding;
+          newMax = gsrMax + padding;
+          console.log(`🔄 右Y轴使用原始动态范围: [${oldMin}, ${oldMax}] → [${newMin.toFixed(3)}, ${newMax.toFixed(3)}]`);
+        }
+        
+        // 适配不同的Chart.js版本
+        if (rightYAxis.ticks) {
+          rightYAxis.ticks.min = newMin;
+          rightYAxis.ticks.max = newMax;
+        } else {
+          rightYAxis.min = newMin;
+          rightYAxis.max = newMax;
+        }
+      } else {
+        console.warn('❌ 找不到任何可用的Y轴');
+        console.log('🔍 完整的scales结构:', this._chart.options.scales);
+      }
+    }
+    
     this._datasets[8].data = gsrPoints;
-    this._chart.update();
+    
+    // 强制更新图表，包括坐标轴
+    this._chart.update('active');
+    
+    // 强制重绘图表
+    if (this._chart.render) {
+      this._chart.render();
+    }
+    
+    // 额外尝试：强制重新计算Y轴范围
+    if (gsrPoints.length > 0) {
+      const gsrValues = gsrPoints.map(p => p.y);
+      const gsrMin = Math.min(...gsrValues);
+      const gsrMax = Math.max(...gsrValues);
+      
+      // 尝试通过Chart.js实例直接设置范围
+      if (this._chart.scales) {
+        const scaleIds = Object.keys(this._chart.scales);
+        console.log(`🔍 运行时可用的scale IDs:`, scaleIds);
+        
+        // 专门更新GSR对应的Y轴
+        const gsrScale = this._chart.scales['y-axis-gsr'];
+        if (gsrScale) {
+          // 检测是否为标准化数据
+          const gsrMean = gsrValues.reduce((a, b) => a + b, 0) / gsrValues.length;
+          const isStandardizedData = Math.abs(gsrMean) < 0.1 && (gsrMax - gsrMin) > 5;
+          
+          if (isStandardizedData) {
+            // 标准化数据：使用数据实际范围加边距
+            const padding = (gsrMax - gsrMin) * 0.1;
+            gsrScale.options.min = gsrMin - padding;
+            gsrScale.options.max = gsrMax + padding;
+            console.log(`🔄 直接更新GSR专用scale (y-axis-gsr): 标准化动态范围 [${(gsrMin - padding).toFixed(3)}, ${(gsrMax + padding).toFixed(3)}]`);
+          } else {
+            // 原始数据：使用动态范围
+            const padding = (gsrMax - gsrMin) * 0.1;
+            gsrScale.options.min = gsrMin - padding;
+            gsrScale.options.max = gsrMax + padding;
+            console.log(`🔄 直接更新GSR专用scale (y-axis-gsr): 原始动态范围 [${(gsrMin - padding).toFixed(3)}, ${(gsrMax + padding).toFixed(3)}]`);
+          }
+        } else {
+          // 备用：更新任何可用的Y轴
+          for (const scaleId of scaleIds) {
+            const scale = this._chart.scales[scaleId];
+            if (scale.type === 'linear' && scale.axis === 'y') {
+              // 检测是否为标准化数据
+              const gsrMean = gsrValues.reduce((a, b) => a + b, 0) / gsrValues.length;
+              const isStandardizedData = Math.abs(gsrMean) < 0.1 && (gsrMax - gsrMin) > 5;
+              
+              if (isStandardizedData) {
+                // 标准化数据：使用数据实际范围加边距
+                const padding = (gsrMax - gsrMin) * 0.1;
+                scale.options.min = gsrMin - padding;
+                scale.options.max = gsrMax + padding;
+                console.log(`🔄 备用：直接更新scale ${scaleId}: 标准化动态范围 [${(gsrMin - padding).toFixed(3)}, ${(gsrMax + padding).toFixed(3)}]`);
+              } else {
+                // 原始数据：使用动态范围
+                const padding = (gsrMax - gsrMin) * 0.1;
+                scale.options.min = gsrMin - padding;
+                scale.options.max = gsrMax + padding;
+                console.log(`🔄 备用：直接更新scale ${scaleId}: 原始动态范围 [${(gsrMin - padding).toFixed(3)}, ${(gsrMax + padding).toFixed(3)}]`);
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    // 额外尝试：完全重新渲染
+    setTimeout(() => {
+      this._chart.update('resize');
+      console.log(`🔄 延迟更新完成`);
+    }, 100);
+    
+    console.log(`✅ GSR图表已更新，包括Y轴范围`);
+  }
+
+  // 更新主Y轴范围（用于Valence/Arousal标准化后）
+  updateMainAxisRange(valenceData, arousalData) {
+    console.log(`🔄 VAChart.updateMainAxisRange: 更新主Y轴范围`);
+    
+    if (!valenceData || valenceData.length === 0) {
+      console.log(`❌ Valence数据为空，跳过主Y轴更新`);
+      return;
+    }
+    
+    // 提取数值
+    const valenceValues = valenceData.filter(record => 
+      record.face && Number.isFinite(record.valence)
+    ).map(record => record.valence);
+    
+    const arousalValues = arousalData ? arousalData.filter(record => 
+      record.face && Number.isFinite(record.arousal)
+    ).map(record => record.arousal) : [];
+    
+    if (valenceValues.length === 0) {
+      console.log(`❌ 有效的Valence数据为空，跳过主Y轴更新`);
+      return;
+    }
+    
+    // 计算数据范围（包含Valence和Arousal）
+    const allValues = [...valenceValues, ...arousalValues];
+    const minValue = Math.min(...allValues);
+    const maxValue = Math.max(...allValues);
+    const padding = (maxValue - minValue) * 0.1; // 10% 边距
+    
+    console.log(`🔍 主Y轴数据范围: ${minValue.toFixed(3)} 到 ${maxValue.toFixed(3)}`);
+    
+    // 检测是否为标准化数据
+    const mean = allValues.reduce((a, b) => a + b, 0) / allValues.length;
+    const isStandardizedData = Math.abs(mean) < 0.1 && (maxValue - minValue) > 3;
+    console.log(`🔍 主Y轴数据分析: 均值=${mean.toFixed(3)}, 范围=${(maxValue - minValue).toFixed(3)}, 标准化=${isStandardizedData}`);
+    
+    // 更新旧版Chart.js的主Y轴
+    if (this._chart.options && this._chart.options.scales && this._chart.options.scales.yAxes) {
+      const mainYAxis = this._chart.options.scales.yAxes[0]; // 主Y轴
+      if (mainYAxis) {
+        console.log(`🔍 找到旧版主Y轴 (yAxes[0])`);
+        
+        // 保存旧范围用于调试
+        const oldMin = mainYAxis.ticks ? mainYAxis.ticks.min : 'undefined';
+        const oldMax = mainYAxis.ticks ? mainYAxis.ticks.max : 'undefined';
+        
+        // 更新Y轴范围
+        if (!mainYAxis.ticks) {
+          mainYAxis.ticks = {};
+        }
+        
+        if (isStandardizedData) {
+          // 标准化数据：使用数据实际范围加边距
+          mainYAxis.ticks.min = minValue - padding;
+          mainYAxis.ticks.max = maxValue + padding;
+          console.log(`🔄 主Y轴使用标准化动态范围: [${oldMin}, ${oldMax}] → [${(minValue - padding).toFixed(3)}, ${(maxValue + padding).toFixed(3)}]`);
+        } else {
+          // 原始数据：使用-1到1的固定范围
+          mainYAxis.ticks.min = -1;
+          mainYAxis.ticks.max = 1;
+          console.log(`🔄 主Y轴使用原始固定范围: [${oldMin}, ${oldMax}] → [-1, 1]`);
+        }
+      }
+    }
+    
+    // 更新新版Chart.js的主Y轴（如果存在）
+    if (this._chart.scales) {
+      const mainScale = this._chart.scales['y-axis-main'];
+      if (mainScale) {
+        console.log(`🔍 找到新版主Y轴 (y-axis-main)`);
+        
+        if (isStandardizedData) {
+          // 标准化数据：使用数据实际范围加边距
+          mainScale.options.min = minValue - padding;
+          mainScale.options.max = maxValue + padding;
+          console.log(`🔄 直接更新主Y轴: 标准化动态范围 [${(minValue - padding).toFixed(3)}, ${(maxValue + padding).toFixed(3)}]`);
+        } else {
+          // 原始数据：使用-1到1的固定范围
+          mainScale.options.min = -1;
+          mainScale.options.max = 1;
+          console.log(`🔄 直接更新主Y轴: 原始固定范围 [-1, 1]`);
+        }
+      }
+    }
+    
+    // 强制更新图表
+    this._chart.update('active');
+    
+    // 强制重绘图表
+    if (this._chart.render) {
+      this._chart.render();
+    }
+    
+    console.log(`✅ 主Y轴范围已更新`);
   }
 
   // 更新PPG数据

@@ -166,6 +166,7 @@
       <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
         <button id="sortDataBtn">时间对齐/去重</button>
         <button id="resampleBtn">重采样(5Hz)</button>
+        <button id="resample50HzBtn">重采样(50Hz)</button>
         <span id="step0Status" class="muted">未处理</span>
       </div>
     </div>
@@ -275,7 +276,27 @@
         <button id="zeroMeanBtn">零均值化</button>
         <button id="zeroScaleBtn">归零缩放</button>
         <button id="zScoreBtn">Z-Score标准化</button>
+        
+        <!-- 新增：时间对齐功能 -->
+        <div style="display: flex; gap: 5px; align-items: center; margin-left: 15px; border-left: 1px solid #555; padding-left: 15px;">
+          <label style="color: #ccc; font-size: 12px;">时间对齐:</label>
+          <button id="alignDataBtn" style="padding: 4px 8px; font-size: 12px; background: #2196f3; border: none; border-radius: 3px; color: white;">互相关对齐VA-GSR</button>
+        </div>
+        
         <span id="step2Status" class="muted">未处理</span>
+      </div>
+      
+      <!-- 对齐详细参数控制 -->
+      <div id="alignmentControls" style="margin-top: 8px; padding: 8px; background: #2a2a2a; border-radius: 4px;">
+        <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+          <div style="display: flex; gap: 5px; align-items: center;">
+            <label style="color: #ccc; font-size: 11px;">最大延迟:</label>
+            <input id="maxLagSeconds" type="number" min="0" max="30" step="0.1" value="5.0" style="width: 60px; padding: 2px 4px; background: #444; color: #fff; border: 1px solid #666; border-radius: 3px; font-size: 11px;">
+            <span style="color: #888; font-size: 11px;">秒</span>
+          </div>
+          
+          <button id="showAlignmentDetails" style="padding: 3px 6px; font-size: 11px; background: #666; border: none; border-radius: 3px; color: white;">详细分析</button>
+        </div>
       </div>
     </div>
     
@@ -774,6 +795,235 @@
     let anomalyDetectionResults = null;
     let showingAnomalies = false;
 
+    // 时间对齐处理器类
+    class TimeAlignmentProcessor {
+      constructor() {
+        this.alignmentResults = null;
+      }
+
+      // 互相关对齐方法
+      async alignData(valenceData, gsrData, options = {}) {
+        const config = {
+          maxLagSeconds: options.maxLagSeconds || 5.0,
+          ...options
+        };
+
+        console.log(`🔄 开始互相关时间对齐, 配置:`, config);
+        console.log(`📊 输入数据: Valence ${valenceData.length}点, GSR ${gsrData.length}点`);
+
+        return await this.crossCorrelationAlignment(valenceData, gsrData, config);
+      }
+
+      // Step 2: 互相关对齐
+      async crossCorrelationAlignment(valenceData, gsrData, config) {
+        console.log('🔍 执行互相关对齐...');
+
+        // 1. 数据预处理和重采样到统一时间轴
+        const { alignedValence, alignedGSR, timeAxis } = this.preprocessForCorrelation(valenceData, gsrData);
+        
+        if (alignedValence.length === 0 || alignedGSR.length === 0) {
+          throw new Error('数据预处理失败：没有有效的重叠时间段');
+        }
+
+        console.log(`📈 预处理完成: 统一时间轴 ${timeAxis.length}点, 时间范围 ${timeAxis[0].toFixed(2)}s - ${timeAxis[timeAxis.length-1].toFixed(2)}s`);
+
+        // 2. 计算互相关
+        const maxLagSamples = Math.floor(config.maxLagSeconds / (timeAxis[1] - timeAxis[0]));
+        const correlation = this.calculateCrossCorrelation(alignedValence, alignedGSR, maxLagSamples);
+        
+        // 3. 找到最佳滞后
+        const bestLag = this.findBestLag(correlation, maxLagSamples);
+        const lagSeconds = bestLag.lagSamples * (timeAxis[1] - timeAxis[0]);
+        const confidence = bestLag.correlation;
+
+        console.log(`🎯 互相关结果: 最佳滞后 ${lagSeconds.toFixed(3)}s (${bestLag.lagSamples}样本), 相关性 ${confidence.toFixed(3)}`);
+
+        // 4. 应用时间偏移
+        const alignedData = this.applyTimeOffset(valenceData, gsrData, lagSeconds);
+
+        this.alignmentResults = {
+          method: 'cross_correlation',
+          lagSeconds: lagSeconds,
+          confidence: confidence,
+          correlation: correlation,
+          alignedValence: alignedData.alignedValence,
+          alignedGSR: alignedData.alignedGSR,
+          diagnostics: {
+            originalValenceLength: valenceData.length,
+            originalGSRLength: gsrData.length,
+            processedLength: timeAxis.length,
+            maxLagSeconds: config.maxLagSeconds,
+            samplingRate: 1 / (timeAxis[1] - timeAxis[0])
+          }
+        };
+
+        return this.alignmentResults;
+      }
+
+
+
+      // 数据预处理：重采样到统一时间轴
+      preprocessForCorrelation(valenceData, gsrData) {
+        // 找到数据的重叠时间范围
+        const valenceTimeRange = [valenceData[0].time, valenceData[valenceData.length - 1].time];
+        const gsrTimeRange = [gsrData[0].time, gsrData[gsrData.length - 1].time];
+        
+        const startTime = Math.max(valenceTimeRange[0], gsrTimeRange[0]);
+        const endTime = Math.min(valenceTimeRange[1], gsrTimeRange[1]);
+        
+        if (startTime >= endTime) {
+          throw new Error('数据没有时间重叠');
+        }
+
+        // 创建统一的时间轴 (0.2s间隔 = 5Hz)
+        const samplingInterval = 0.2;
+        const timeAxis = [];
+        for (let t = startTime; t <= endTime; t += samplingInterval) {
+          timeAxis.push(t);
+        }
+
+        // 插值到统一时间轴
+        const alignedValence = this.interpolateToTimeAxis(valenceData, timeAxis, 'valence');
+        const alignedGSR = this.interpolateToTimeAxis(gsrData, timeAxis, 'gsr');
+
+        return { alignedValence, alignedGSR, timeAxis };
+      }
+
+      // 线性插值到指定时间轴
+      interpolateToTimeAxis(sourceData, targetTimeAxis, valueField) {
+        const result = [];
+        
+        for (const targetTime of targetTimeAxis) {
+          // 找到插值点
+          let beforeIndex = -1;
+          let afterIndex = -1;
+          
+          for (let i = 0; i < sourceData.length - 1; i++) {
+            if (sourceData[i].time <= targetTime && sourceData[i + 1].time >= targetTime) {
+              beforeIndex = i;
+              afterIndex = i + 1;
+              break;
+            }
+          }
+          
+          let interpolatedValue;
+          
+          if (beforeIndex !== -1 && afterIndex !== -1) {
+            // 线性插值
+            const before = sourceData[beforeIndex];
+            const after = sourceData[afterIndex];
+            const ratio = (targetTime - before.time) / (after.time - before.time);
+            interpolatedValue = before[valueField] + ratio * (after[valueField] - before[valueField]);
+          } else {
+            // 使用最近邻
+            let closestIndex = 0;
+            let minDistance = Math.abs(sourceData[0].time - targetTime);
+            
+            for (let i = 1; i < sourceData.length; i++) {
+              const distance = Math.abs(sourceData[i].time - targetTime);
+              if (distance < minDistance) {
+                minDistance = distance;
+                closestIndex = i;
+              }
+            }
+            
+            interpolatedValue = sourceData[closestIndex][valueField];
+          }
+          
+          result.push(interpolatedValue);
+        }
+        
+        return result;
+      }
+
+      // 计算互相关
+      calculateCrossCorrelation(signal1, signal2, maxLag) {
+        const correlation = [];
+        const length = Math.min(signal1.length, signal2.length);
+        
+        // 计算从 -maxLag 到 +maxLag 的相关性
+        for (let lag = -maxLag; lag <= maxLag; lag++) {
+          let sum = 0;
+          let count = 0;
+          
+          const mean1 = signal1.reduce((a, b) => a + b, 0) / signal1.length;
+          const mean2 = signal2.reduce((a, b) => a + b, 0) / signal2.length;
+          
+          let sum1Sq = 0, sum2Sq = 0, sumProduct = 0;
+          
+          for (let i = 0; i < length; i++) {
+            const j = i + lag;
+            if (j >= 0 && j < length) {
+              const val1 = signal1[i] - mean1;
+              const val2 = signal2[j] - mean2;
+              
+              sum1Sq += val1 * val1;
+              sum2Sq += val2 * val2;
+              sumProduct += val1 * val2;
+              count++;
+            }
+          }
+          
+          const correlation_value = count > 0 ? sumProduct / Math.sqrt(sum1Sq * sum2Sq) : 0;
+          correlation.push({ lag: lag, correlation: correlation_value });
+        }
+        
+        return correlation;
+      }
+
+      // 找到最佳滞后
+      findBestLag(correlation) {
+        let bestResult = { lagSamples: 0, correlation: 0 };
+        
+        for (const result of correlation) {
+          if (Math.abs(result.correlation) > Math.abs(bestResult.correlation)) {
+            bestResult = { lagSamples: result.lag, correlation: result.correlation };
+          }
+        }
+        
+        return bestResult;
+      }
+
+      // 应用时间偏移
+      applyTimeOffset(valenceData, gsrData, lagSeconds) {
+        const alignedValence = valenceData.map(d => ({ ...d }));
+        const alignedGSR = gsrData.map(d => ({ 
+          ...d, 
+          time: d.time - lagSeconds // GSR时间向前/向后偏移
+        }));
+
+        return { alignedValence, alignedGSR };
+      }
+
+
+
+
+      // 生成对齐报告
+      generateAlignmentReport() {
+        if (!this.alignmentResults) {
+          return '没有对齐结果';
+        }
+        
+        const result = this.alignmentResults;
+        let report = `📊 时间对齐报告\n`;
+        report += `方法: ${result.method}\n`;
+        report += `时间偏移: ${result.lagSeconds.toFixed(3)}秒\n`;
+        report += `相关性置信度: ${result.confidence.toFixed(3)}\n`;
+        
+        if (result.driftModel) {
+          report += `\n🔧 漂移修正:\n`;
+          report += `时钟偏差: ${((result.driftModel.scale - 1) * 100).toFixed(3)}%\n`;
+          report += `拟合质量 R²: ${result.driftModel.r2.toFixed(3)}\n`;
+        }
+        
+        report += `\n📈 诊断信息:\n`;
+        report += `原始数据: VA ${result.diagnostics.originalValenceLength}点, GSR ${result.diagnostics.originalGSRLength}点\n`;
+        report += `处理采样率: ${result.diagnostics.samplingRate.toFixed(1)}Hz\n`;
+        
+        return report;
+      }
+    }
+
     // Isolation Forest异常检测器类
     class IsolationForestDetector {
       constructor() {
@@ -799,7 +1049,11 @@
                 timestamps.push(item.time);
               }
             }
-            sourceInfo = `GSR数据：${data.length}个数据点`;
+            // 检测GSR数据是否已标准化
+            const gsrValues = data.map(d => d[0]);
+            const gsrMean = gsrValues.reduce((a, b) => a + b, 0) / gsrValues.length;
+            const isStandardized = Math.abs(gsrMean) < 0.1 && gsrValues.some(v => Math.abs(v) > 2);
+            sourceInfo = `GSR数据${isStandardized ? '(已标准化)' : '(原始)'}：${data.length}个数据点`;
             break;
             
           case 'valence':
@@ -813,7 +1067,11 @@
                 timestamps.push(record.time);
               }
             }
-            sourceInfo = `Valence数据：${data.length}个数据点`;
+            // 检测Valence数据是否已标准化
+            const valenceValues = data.map(d => d[0]);
+            const valenceMean = valenceValues.reduce((a, b) => a + b, 0) / valenceValues.length;
+            const isValenceStandardized = Math.abs(valenceMean) < 0.1 && valenceValues.some(v => Math.abs(v) > 2);
+            sourceInfo = `Valence数据${isValenceStandardized ? '(已标准化)' : '(原始)'}：${data.length}个数据点`;
             break;
             
           case 'combined':
@@ -829,7 +1087,20 @@
               }
             }
             
-            sourceInfo = `联合数据：${data.length}个数据点 (GSR + Valence)`;
+            // 检测联合数据是否已标准化
+            if (data.length > 0) {
+              const gsrVals = data.map(d => d[0]);
+              const valenceVals = data.map(d => d[1]);
+              const gsrMean = gsrVals.reduce((a, b) => a + b, 0) / gsrVals.length;
+              const valenceMean = valenceVals.reduce((a, b) => a + b, 0) / valenceVals.length;
+              const gsrStd = Math.abs(gsrMean) < 0.1 && gsrVals.some(v => Math.abs(v) > 2);
+              const valenceStd = Math.abs(valenceMean) < 0.1 && valenceVals.some(v => Math.abs(v) > 2);
+              const statusText = (gsrStd && valenceStd) ? '(已标准化)' : 
+                                 (gsrStd || valenceStd) ? '(部分标准化)' : '(原始)';
+              sourceInfo = `联合数据${statusText}：${data.length}个数据点 (GSR + Valence)`;
+            } else {
+              sourceInfo = `联合数据：${data.length}个数据点 (GSR + Valence)`;
+            }
             console.log(`✅ 联合数据准备完成: ${data.length}个二维特征向量`);
             break;
             
@@ -3669,6 +3940,11 @@
       chart._datasets[1].data = arousalData;
       chart._datasets[2].data = noFaceData;
       
+      // 同时更新GSR数据
+      if (physiologicalData.gsr && physiologicalData.gsr.length > 0 && chart.updateGSRData) {
+        chart.updateGSRData(physiologicalData.gsr);
+      }
+      
       chart._chart.update();
       
       // 加载情绪数据到情绪图表
@@ -4069,6 +4345,75 @@
       updateProcessingStatus('step0', true, `重采样完成，${newData.length}个数据点@5Hz`);
     });
 
+    // 50Hz重采样
+    document.getElementById('resample50HzBtn').addEventListener('click', () => {
+      if (processedDataLog.length === 0) {
+        alert('请先进行时间对齐');
+        return;
+      }
+      
+      // 重采样到50Hz (20ms间隔)
+      const startTime = processedDataLog[0].time;
+      const endTime = processedDataLog[processedDataLog.length - 1].time;
+      const interval = 0.02; // 20ms = 50Hz
+      const newData = [];
+      
+      console.log(`🔄 开始50Hz重采样: ${startTime.toFixed(3)}s 到 ${endTime.toFixed(3)}s, 间隔=${interval}s`);
+      
+      for (let t = startTime; t <= endTime; t += interval) {
+        // 找到最近的有效数据点进行插值
+        let beforeIdx = -1, afterIdx = -1;
+        
+        for (let i = 0; i < processedDataLog.length; i++) {
+          if (processedDataLog[i].face && processedDataLog[i].time <= t) {
+            beforeIdx = i;
+          }
+          if (processedDataLog[i].face && processedDataLog[i].time >= t && afterIdx === -1) {
+            afterIdx = i;
+            break;
+          }
+        }
+        
+        if (beforeIdx !== -1 && afterIdx !== -1 && beforeIdx !== afterIdx) {
+          // 线性插值
+          const before = processedDataLog[beforeIdx];
+          const after = processedDataLog[afterIdx];
+          const ratio = (t - before.time) / (after.time - before.time);
+          
+          const newRecord = {
+            time: t,
+            valence: before.valence + ratio * (after.valence - before.valence),
+            arousal: before.arousal + ratio * (after.arousal - before.arousal),
+            face: true
+          };
+          
+          // 如果有GSR数据，也进行插值
+          if (before.gsr !== undefined && after.gsr !== undefined) {
+            newRecord.gsr = before.gsr + ratio * (after.gsr - before.gsr);
+          }
+          
+          // 如果有PPG数据，也进行插值
+          if (before.ppg !== undefined && after.ppg !== undefined) {
+            newRecord.ppg = before.ppg + ratio * (after.ppg - before.ppg);
+          }
+          
+          newData.push(newRecord);
+        } else if (beforeIdx !== -1) {
+          const record = processedDataLog[beforeIdx];
+          if (Math.abs(record.time - t) < 0.01) { // 10ms容差
+            newData.push({ ...record, time: t });
+          }
+        }
+      }
+      
+      processedDataLog = newData;
+      dataLog = processedDataLog.map(r => ({ ...r }));
+      loadAllDataToChart();
+      
+      console.log(`✅ 50Hz重采样完成: ${newData.length}个数据点`);
+      updateProcessingStatus('step0', true, `50Hz重采样完成，${newData.length}个数据点@50Hz`);
+    });
+
     // NeuroKit GSR预处理
     document.getElementById('neurokitProcessBtn').addEventListener('click', async () => {
       if (!physiologicalData.gsr || physiologicalData.gsr.length === 0) {
@@ -4413,6 +4758,51 @@
       const vMean = valenceVals.reduce((s,v) => s+v, 0) / valenceVals.length;
       const aMean = arousalVals.reduce((s,v) => s+v, 0) / arousalVals.length;
       
+      // 处理GSR数据 - 从physiologicalData.gsr中获取
+      let gsrMean = 0;
+      let gsrCount = 0;
+      if (physiologicalData.gsr && physiologicalData.gsr.length > 0) {
+        const gsrVals = physiologicalData.gsr.map(item => item.gsr).filter(Number.isFinite);
+        gsrMean = gsrVals.length > 0 ? gsrVals.reduce((s,v) => s+v, 0) / gsrVals.length : 0;
+        gsrCount = gsrVals.length;
+        
+        // 应用零均值化到GSR数据
+        for (const item of physiologicalData.gsr) {
+          if (Number.isFinite(item.gsr)) {
+            item.gsr -= gsrMean;
+          }
+        }
+        
+        // 更新图表中的GSR数据
+        if (chart && chart.updateGSRData) {
+          chart.updateGSRData(physiologicalData.gsr);
+        }
+      }
+      
+      // 处理PPG数据 - 从physiologicalData.ppg中获取
+      let ppgMean = 0;
+      let ppgCount = 0;
+      if (physiologicalData.ppg && physiologicalData.ppg.length > 0) {
+        const ppgVals = physiologicalData.ppg.map(item => item.ppg).filter(Number.isFinite);
+        ppgMean = ppgVals.length > 0 ? ppgVals.reduce((s,v) => s+v, 0) / ppgVals.length : 0;
+        ppgCount = ppgVals.length;
+        
+        // 应用零均值化到PPG数据
+        for (const item of physiologicalData.ppg) {
+          if (Number.isFinite(item.ppg)) {
+            item.ppg -= ppgMean;
+          }
+        }
+        
+        // 更新图表中的PPG数据
+        if (chart && chart.updatePPGData) {
+          chart.updatePPGData(physiologicalData.ppg);
+        }
+      }
+      
+      console.log(`🔄 零均值化: VA(${valenceVals.length}), GSR(${gsrCount}), PPG(${ppgCount})个数据点`);
+      
+      // 处理VA数据
       for (const record of processedDataLog) {
         if (record.face && Number.isFinite(record.valence) && Number.isFinite(record.arousal)) {
           record.valence -= vMean;
@@ -4423,7 +4813,23 @@
       dataLog = processedDataLog.map(r => ({ ...r }));
       loadAllDataToChart();
       
-      updateProcessingStatus('step2', true, `零均值化完成，V均值=${vMean.toFixed(3)}, A均值=${aMean.toFixed(3)}`);
+      // 强制刷新GSR和PPG图表显示
+      if (gsrCount > 0 && chart && chart.updateGSRData) {
+        chart.updateGSRData(physiologicalData.gsr);
+        console.log(`🔄 已刷新GSR图表显示，${gsrCount}个数据点`);
+      }
+      
+      if (ppgCount > 0 && chart && chart.updatePPGData) {
+        chart.updatePPGData(physiologicalData.ppg);
+        console.log(`🔄 已刷新PPG图表显示，${ppgCount}个数据点`);
+      }
+      
+      const statusMsg = `零均值化完成 - V均值=${vMean.toFixed(3)}, A均值=${aMean.toFixed(3)}` +
+        (gsrCount > 0 ? `, GSR均值=${gsrMean.toFixed(3)}` : '') +
+        (ppgCount > 0 ? `, PPG均值=${ppgMean.toFixed(3)}` : '');
+      
+      console.log(`✅ ${statusMsg}`);
+      updateProcessingStatus('step2', true, statusMsg);
     });
     
     // 归零缩放 (零均值化 + 缩放到[-1,1])
@@ -4437,14 +4843,54 @@
       const valenceVals = faceData.map(r => r.valence).filter(Number.isFinite);
       const arousalVals = faceData.map(r => r.arousal).filter(Number.isFinite);
       
-      // 1. 计算均值
+      // 1. 计算VA均值
       const vMean = valenceVals.reduce((s,v) => s+v, 0) / valenceVals.length;
       const aMean = arousalVals.reduce((s,v) => s+v, 0) / arousalVals.length;
       
-      // 2. 应用均值偏移
+      // 处理GSR数据 - 从physiologicalData.gsr中获取
+      let gsrMean = 0;
+      let gsrCount = 0;
+      let gsrNormVals = [];
+      if (physiologicalData.gsr && physiologicalData.gsr.length > 0) {
+        const gsrVals = physiologicalData.gsr.map(item => item.gsr).filter(Number.isFinite);
+        gsrMean = gsrVals.length > 0 ? gsrVals.reduce((s,v) => s+v, 0) / gsrVals.length : 0;
+        gsrCount = gsrVals.length;
+        
+        // 应用均值偏移到GSR数据
+        for (const item of physiologicalData.gsr) {
+          if (Number.isFinite(item.gsr)) {
+            item.gsr -= gsrMean;
+            gsrNormVals.push(item.gsr);
+          }
+        }
+      }
+      
+      // 处理PPG数据 - 从physiologicalData.ppg中获取
+      let ppgMean = 0;
+      let ppgCount = 0;
+      let ppgNormVals = [];
+      if (physiologicalData.ppg && physiologicalData.ppg.length > 0) {
+        const ppgVals = physiologicalData.ppg.map(item => item.ppg).filter(Number.isFinite);
+        ppgMean = ppgVals.length > 0 ? ppgVals.reduce((s,v) => s+v, 0) / ppgVals.length : 0;
+        ppgCount = ppgVals.length;
+        
+        // 应用均值偏移到PPG数据
+        for (const item of physiologicalData.ppg) {
+          if (Number.isFinite(item.ppg)) {
+            item.ppg -= ppgMean;
+            ppgNormVals.push(item.ppg);
+          }
+        }
+      }
+      
+      console.log(`🔄 归零缩放: VA(${valenceVals.length}), GSR(${gsrCount}), PPG(${ppgCount})个数据点`);
+      
+      // 2. 应用均值偏移到VA数据
       let vVals = [];
       let aVals = [];
+      
       for (const record of processedDataLog) {
+        // 处理VA数据
         if (record.face && Number.isFinite(record.valence) && Number.isFinite(record.arousal)) {
           record.valence -= vMean;
           record.arousal -= aMean;
@@ -4454,22 +4900,58 @@
       }
       
       // 3. 缩放到 [-1, 1] 范围
-      const vMax = Math.max(...vVals.map(Math.abs));
-      const aMax = Math.max(...aVals.map(Math.abs));
+      const vMax = vVals.length > 0 ? Math.max(...vVals.map(Math.abs)) : 0;
+      const aMax = aVals.length > 0 ? Math.max(...aVals.map(Math.abs)) : 0;
+      const gsrMax = gsrNormVals.length > 0 ? Math.max(...gsrNormVals.map(Math.abs)) : 0;
+      const ppgMax = ppgNormVals.length > 0 ? Math.max(...ppgNormVals.map(Math.abs)) : 0;
       
-      if (vMax > 0 || aMax > 0) {
-        for (const record of processedDataLog) {
-          if (record.face && Number.isFinite(record.valence) && Number.isFinite(record.arousal)) {
-            if (vMax > 0) record.valence /= vMax;
-            if (aMax > 0) record.arousal /= aMax;
+      // 缩放VA数据
+      for (const record of processedDataLog) {
+        if (record.face && Number.isFinite(record.valence) && Number.isFinite(record.arousal)) {
+          if (vMax > 0) record.valence /= vMax;
+          if (aMax > 0) record.arousal /= aMax;
+        }
+      }
+      
+      // 缩放GSR数据
+      if (physiologicalData.gsr && gsrMax > 0) {
+        for (const item of physiologicalData.gsr) {
+          if (Number.isFinite(item.gsr)) {
+            item.gsr /= gsrMax;
           }
+        }
+        
+        // 更新图表中的GSR数据
+        if (chart && chart.updateGSRData) {
+          chart.updateGSRData(physiologicalData.gsr);
+        }
+      }
+      
+      // 缩放PPG数据
+      if (physiologicalData.ppg && ppgMax > 0) {
+        for (const item of physiologicalData.ppg) {
+          if (Number.isFinite(item.ppg)) {
+            item.ppg /= ppgMax;
+          }
+        }
+        
+        // 更新图表中的PPG数据
+        if (chart && chart.updatePPGData) {
+          chart.updatePPGData(physiologicalData.ppg);
         }
       }
       
       dataLog = processedDataLog.map(r => ({ ...r }));
       loadAllDataToChart();
       
-      updateProcessingStatus('step2', true, `归零缩放完成，V均值=${vMean.toFixed(3)}, A均值=${aMean.toFixed(3)}, V缩放=${vMax.toFixed(3)}, A缩放=${aMax.toFixed(3)}`);
+      // 强制刷新GSR和PPG图表显示 - 已经在上面处理了，这里无需重复
+      
+      const statusMsg = `归零缩放完成 - VA: V均值=${vMean.toFixed(3)}, A均值=${aMean.toFixed(3)}` +
+        (gsrCount > 0 ? `, GSR均值=${gsrMean.toFixed(3)}` : '') +
+        (ppgCount > 0 ? `, PPG均值=${ppgMean.toFixed(3)}` : '');
+      
+      console.log(`✅ ${statusMsg}`);
+      updateProcessingStatus('step2', true, statusMsg);
     });
     
     document.getElementById('zScoreBtn').addEventListener('click', () => {
@@ -4478,14 +4960,65 @@
         return;
       }
       
+      // 处理VA数据
       const valenceVals = processedDataLog.filter(r => r.face).map(r => r.valence).filter(Number.isFinite);
       const arousalVals = processedDataLog.filter(r => r.face).map(r => r.arousal).filter(Number.isFinite);
+      
+      console.log(`🔍 Valence原始数据样本: [${valenceVals.slice(0, 5).map(v => v.toFixed(3)).join(', ')}]`);
+      console.log(`🔍 Arousal原始数据样本: [${arousalVals.slice(0, 5).map(v => v.toFixed(3)).join(', ')}]`);
       
       const vZScored = zscore(valenceVals);
       const aZScored = zscore(arousalVals);
       
+      console.log(`🔍 Valence标准化样本: [${vZScored.slice(0, 5).map(v => v.toFixed(3)).join(', ')}]`);
+      console.log(`🔍 Arousal标准化样本: [${aZScored.slice(0, 5).map(v => v.toFixed(3)).join(', ')}]`);
+      
+      // 处理GSR数据 - 从physiologicalData.gsr中获取
+      let gsrZScored = [];
+      let gsrCount = 0;
+      if (physiologicalData.gsr && physiologicalData.gsr.length > 0) {
+        const gsrVals = physiologicalData.gsr.map(item => item.gsr).filter(Number.isFinite);
+        gsrZScored = zscore(gsrVals);
+        gsrCount = gsrVals.length;
+        
+        console.log(`🔍 GSR原始数据样本: [${gsrVals.slice(0, 5).map(v => v.toFixed(3)).join(', ')}]`);
+        console.log(`🔍 GSR标准化样本: [${gsrZScored.slice(0, 5).map(v => v.toFixed(3)).join(', ')}]`);
+        
+        // 应用Z-score到GSR数据
+        let gsrIdx = 0;
+        for (const item of physiologicalData.gsr) {
+          if (Number.isFinite(item.gsr)) {
+            const originalValue = item.gsr;
+            item.gsr = gsrZScored[gsrIdx++];
+            
+            // 调试前几个数据点的变化
+            if (gsrIdx <= 3) {
+              console.log(`🔍 GSR数据点${gsrIdx}: ${originalValue.toFixed(3)} -> ${item.gsr.toFixed(3)}`);
+            }
+          }
+        }
+        
+        // 验证数据是否真的被修改了
+        const afterVals = physiologicalData.gsr.map(item => item.gsr).filter(Number.isFinite);
+        console.log(`🔍 GSR修改后样本: [${afterVals.slice(0, 5).map(v => v.toFixed(3)).join(', ')}]`);
+        console.log(`🔍 GSR修改后统计: 均值=${(afterVals.reduce((s,v)=>s+v,0)/afterVals.length).toFixed(3)}, 标准差=${Math.sqrt(afterVals.reduce((s,v)=>s+Math.pow(v-afterVals.reduce((a,b)=>a+b,0)/afterVals.length,2),0)/afterVals.length).toFixed(3)}`);
+        
+        // 更新图表中的GSR数据
+        if (chart && chart.updateGSRData) {
+          console.log(`🔄 调用 chart.updateGSRData() 更新图表`);
+          chart.updateGSRData(physiologicalData.gsr);
+        }
+      }
+      
+      // PPG数据不需要处理
+      let ppgCount = 0;
+      
+      console.log(`🔄 Z-Score标准化: VA(${valenceVals.length}), GSR(${gsrCount}), PPG(${ppgCount})个数据点`);
+      
+      // 应用VA数据标准化结果
       let vIdx = 0, aIdx = 0;
       for (const record of processedDataLog) {
+        // 标准化VA数据
         if (record.face && Number.isFinite(record.valence) && Number.isFinite(record.arousal)) {
           record.valence = vZScored[vIdx++];
           record.arousal = aZScored[aIdx++];
@@ -4495,7 +5028,109 @@
       dataLog = processedDataLog.map(r => ({ ...r }));
       loadAllDataToChart();
       
-      updateProcessingStatus('step2', true, 'Z-Score标准化完成');
+      // 强制刷新GSR和PPG图表显示
+      if (gsrCount > 0 && chart && chart.updateGSRData) {
+        chart.updateGSRData(physiologicalData.gsr);
+        console.log(`🔄 已刷新GSR图表显示，${gsrCount}个数据点`);
+      }
+      
+      // 更新主Y轴范围以适应标准化后的VA数据
+      if (chart && chart.updateMainAxisRange) {
+        console.log(`🔄 调用 chart.updateMainAxisRange() 更新主Y轴`);
+        chart.updateMainAxisRange(processedDataLog, processedDataLog);
+      }
+      
+      // PPG数据不需要处理，跳过
+      
+      const statusMsg = `Z-Score标准化完成 (VA: ${valenceVals.length}, GSR: ${gsrCount}个数据点)`;
+      console.log(`✅ ${statusMsg}`);
+      updateProcessingStatus('step2', true, statusMsg);
+    });
+
+    // 创建时间对齐处理器实例
+    const timeAlignmentProcessor = new TimeAlignmentProcessor();
+
+    // 时间对齐按钮点击事件
+    document.getElementById('alignDataBtn').addEventListener('click', async () => {
+      // 检查数据可用性
+      if (processedDataLog.length === 0) {
+        alert('请先进行前置数据处理（如重采样、滤波等）');
+        return;
+      }
+      
+      if (!physiologicalData.gsr || physiologicalData.gsr.length === 0) {
+        alert('请先导入GSR数据');
+        return;
+      }
+      
+      const btn = document.getElementById('alignDataBtn');
+      const statusEl = document.getElementById('step2Status');
+      const originalText = btn.textContent;
+      
+      try {
+        btn.disabled = true;
+        btn.textContent = '对齐中...';
+        statusEl.textContent = '正在进行时间对齐...';
+        statusEl.style.color = '#fbbf24';
+        
+        // 获取用户配置
+        const config = {
+          maxLagSeconds: parseFloat(document.getElementById('maxLagSeconds').value) || 5.0
+        };
+        
+        // 准备数据 - 使用经过处理的数据
+        const valenceData = processedDataLog.filter(r => r.face && isFinite(r.valence));
+        const gsrData = physiologicalData.gsr.filter(item => isFinite(item.gsr));
+        
+        console.log(`🚀 开始互相关时间对齐`);
+        console.log(`📊 输入数据: Valence ${valenceData.length}点, GSR ${gsrData.length}点`);
+        console.log(`📊 数据来源: 使用经过处理的数据 (processedDataLog + physiologicalData.gsr)`);
+        
+        // 执行对齐
+        const alignmentResult = await timeAlignmentProcessor.alignData(valenceData, gsrData, config);
+        
+        // 更新处理后的数据
+        processedDataLog = alignmentResult.alignedValence;
+        dataLog = processedDataLog.map(r => ({ ...r }));
+        physiologicalData.gsr = alignmentResult.alignedGSR;
+        
+        // 更新图表
+        loadAllDataToChart();
+        
+        // 显示结果
+        const report = timeAlignmentProcessor.generateAlignmentReport();
+        console.log(report);
+        
+        const summaryMsg = `互相关时间对齐完成 | 偏移: ${alignmentResult.lagSeconds.toFixed(2)}s | 置信度: ${alignmentResult.confidence.toFixed(3)}`;
+        statusEl.textContent = summaryMsg;
+        statusEl.style.color = '#4caf50';
+        
+        updateProcessingStatus('step2', true, summaryMsg);
+        
+        console.log('✅ 时间对齐完成，已更新 processedDataLog 和 physiologicalData.gsr');
+        
+      } catch (error) {
+        console.error('时间对齐失败:', error);
+        statusEl.textContent = '对齐失败: ' + error.message;
+        statusEl.style.color = '#ef4444';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
+
+
+
+    // 显示详细分析按钮
+    document.getElementById('showAlignmentDetails').addEventListener('click', () => {
+      const report = timeAlignmentProcessor.generateAlignmentReport();
+      if (report === '没有对齐结果') {
+        alert('请先执行时间对齐');
+      } else {
+        console.log('📊 详细对齐分析报告:');
+        console.log(report);
+        alert('详细报告已输出到控制台，请按F12查看');
+      }
     });
     
     // 步骤3: 导数计算
