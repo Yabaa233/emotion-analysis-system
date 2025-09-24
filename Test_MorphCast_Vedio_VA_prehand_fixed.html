@@ -226,6 +226,11 @@
             <input id="minDurationParam" type="number" value="1.0" min="0.1" max="30" step="0.1" style="width: 60px; background: #444; color: #fff; border: 1px solid #666; padding: 3px; border-radius: 3px; font-size: 11px;">
             <span style="color: #888; font-size: 11px;">秒</span>
           </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <label style="color: #aaa; font-size: 11px; min-width: 50px;">前向偏移:</label>
+            <input id="forwardOffsetParam" type="number" value="0.0" min="0.0" max="1.0" step="0.1" style="width: 60px; background: #444; color: #fff; border: 1px solid #666; padding: 3px; border-radius: 3px; font-size: 11px;">
+            <span style="color: #888; font-size: 11px;">比例</span>
+          </div>
         </div>
         
         <!-- 操作按钮 -->
@@ -4519,20 +4524,59 @@
           // 检测异常区间
           const intervals = anomalyIntervalDetector.detectIntervals(results.anomalies, intervalConfig);
           
+          // 应用前向偏移到异常区间
+          const forwardOffset = parseFloat(document.getElementById('forwardOffsetParam').value) || 0.0;
+          let displayIntervals = intervals;
+          
+          // 统一使用 startTime 和 endTime 属性
+          if (forwardOffset > 0) {
+            displayIntervals = intervals.map(interval => {
+              const duration = interval.endTime - interval.startTime;
+              const offset = duration * forwardOffset;
+              const newStart = Math.max(0, interval.startTime - offset);
+              const newEnd = Math.max(0, interval.endTime - offset);
+              return {
+                ...interval,
+                startTime: newStart,
+                endTime: newEnd,
+                originalStart: interval.startTime,
+                originalEnd: interval.endTime,
+                offset: offset
+              };
+            });
+            console.log(`⏪ 应用前向偏移 ${(forwardOffset * 100).toFixed(0)}%:`, displayIntervals);
+          } else {
+            // 不做偏移，直接使用原始数据
+            displayIntervals = intervals;
+          }
+          
           // 显示异常区间
-          if (intervals.length > 0) {
+          if (displayIntervals.length > 0) {
             if (chart && typeof chart.showAnomalyIntervals === 'function') {
-              chart.showAnomalyIntervals(intervals);
-              console.log(`✨ 在图表上显示了 ${intervals.length} 个异常区间`);
+              // 添加详细的调试信息
+              console.log(`🔍 显示区间详情 (偏移${(forwardOffset * 100).toFixed(0)}%):`, 
+                displayIntervals.slice(0, 3).map(i => {
+                  const hasOriginal = i.originalStart !== undefined && i.originalEnd !== undefined;
+                  return {
+                    original: hasOriginal ? `${i.originalStart.toFixed(1)}s-${i.originalEnd.toFixed(1)}s` : `无原始数据`,
+                    display: `${i.startTime.toFixed(1)}s-${i.endTime.toFixed(1)}s`,
+                    offset: i.offset ? i.offset.toFixed(1) + 's' : '无偏移'
+                  };
+                })
+              );
+              chart.showAnomalyIntervals(displayIntervals);
+              console.log(`✨ 在图表上显示了 ${displayIntervals.length} 个异常区间`);
             } else {
               console.warn('图表不支持显示异常区间功能');
             }
             
             // 更新状态显示
-            statusEl.textContent = `检测完成 - ${results.sourceInfo} (🔶${intervals.length}个区间)`;
+            const offsetText = forwardOffset > 0 ? ` ⏪${(forwardOffset * 100).toFixed(0)}%偏移` : '';
+            statusEl.textContent = `检测完成 - ${results.sourceInfo} (🔶${displayIntervals.length}个区间${offsetText})`;
             
-            // 保存区间结果
+            // 保存区间结果（保存原始区间和显示区间）
             results.intervals = intervals;
+            results.displayIntervals = displayIntervals;
           } else {
             console.log('未检测到有效的异常区间');
           }
@@ -4587,10 +4631,11 @@
       showingIntervals = !showingIntervals;
       
       if (showingIntervals) {
-        chart.showAnomalyIntervals(anomalyDetectionResults.intervals);
+        const intervalsToShow = anomalyDetectionResults.displayIntervals || anomalyDetectionResults.intervals;
+        chart.showAnomalyIntervals(intervalsToShow);
         btn.textContent = '🔶 隐藏异常区间';
         btn.style.background = '#7c3aed';
-        console.log(`🎨 显示 ${anomalyDetectionResults.intervals.length} 个异常区间`);
+        console.log(`🎨 显示 ${intervalsToShow.length} 个异常区间`);
       } else {
         chart.hideAnomalyIntervals();
         btn.textContent = '🔶 显示异常区间';
@@ -4624,18 +4669,51 @@
         // 重新检测异常区间
         const intervals = anomalyIntervalDetector.detectIntervals(anomalyDetectionResults.anomalies, intervalConfig);
         
+        // 应用前向偏移
+        const forwardOffset = parseFloat(document.getElementById('forwardOffsetParam').value) || 0.0;
+        let displayIntervals = intervals;
+        
+        if (forwardOffset > 0) {
+          displayIntervals = intervals.map(interval => {
+            const duration = interval.end - interval.start;
+            const offset = duration * forwardOffset;
+            const newStart = Math.max(0, interval.start - offset);
+            const newEnd = Math.max(0, interval.end - offset);
+            return {
+              ...interval,
+              start: newStart,
+              end: newEnd,
+              startTime: newStart,  // 图表需要的属性
+              endTime: newEnd,      // 图表需要的属性
+              originalStart: interval.start,
+              originalEnd: interval.end,
+              offset: offset
+            };
+          });
+          console.log(`⏪ 重新计算时应用前向偏移 ${(forwardOffset * 100).toFixed(0)}%:`, displayIntervals);
+        } else {
+          // 即使没有偏移，也要确保有startTime和endTime属性
+          displayIntervals = intervals.map(interval => ({
+            ...interval,
+            startTime: interval.start,
+            endTime: interval.end
+          }));
+        }
+        
         // 更新结果
         anomalyDetectionResults.intervals = intervals;
+        anomalyDetectionResults.displayIntervals = displayIntervals;
         
         // 如果当前正在显示区间，则更新显示
         if (showingIntervals && chart && typeof chart.showAnomalyIntervals === 'function') {
           chart.hideAnomalyIntervals();
-          chart.showAnomalyIntervals(intervals);
+          chart.showAnomalyIntervals(displayIntervals);
         }
         
         // 更新状态
         const statusEl = document.getElementById('anomalyDetectionStatus');
-        statusEl.textContent = `检测完成 - ${anomalyDetectionResults.sourceInfo} (🔶${intervals.length}个区间)`;
+        const offsetText = forwardOffset > 0 ? ` ⏪${(forwardOffset * 100).toFixed(0)}%偏移` : '';
+        statusEl.textContent = `检测完成 - ${anomalyDetectionResults.sourceInfo} (🔶${displayIntervals.length}个区间${offsetText})`;
         
         console.log(`✅ 重新计算完成: ${intervals.length} 个异常区间`);
         

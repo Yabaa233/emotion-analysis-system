@@ -854,15 +854,19 @@ class VAChart {
     const allIntervalData = [];
     
     intervals.forEach((interval, index) => {
+      // 统一使用 startTime 和 endTime 属性
+      const startTime = interval.startTime;
+      const endTime = interval.endTime;
+      
       // 为每个区间添加矩形数据点
       allIntervalData.push(
-        { x: interval.startTime, y: -1 },
-        { x: interval.startTime, y: 1 },
-        { x: interval.endTime, y: 1 },
-        { x: interval.endTime, y: -1 },
-        { x: interval.startTime, y: null } // 分隔不同区间
+        { x: startTime, y: -1 },
+        { x: startTime, y: 1 },
+        { x: endTime, y: 1 },
+        { x: endTime, y: -1 },
+        { x: startTime, y: null } // 分隔不同区间
       );
-      console.log(`🔶 添加异常区间${index + 1}: ${interval.startTime.toFixed(1)}s-${interval.endTime.toFixed(1)}s`);
+      console.log(`🔶 添加异常区间${index + 1}: ${startTime.toFixed(1)}s-${endTime.toFixed(1)}s`);
     });
 
     // 创建单一数据集包含所有区间
