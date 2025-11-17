@@ -380,7 +380,7 @@
     // EDA信号预处理类 - 基于NeuroKit方法
     class EDAPreprocessor {
       constructor() {
-        this.apiUrl = 'http://localhost:8080'; // DeepFace API地址 (包含EDA处理功能)
+        this.apiUrl = 'http://localhost:5000'; // DeepFace API地址 (包含EDA处理功能)
         this.methods = {
           'neurokit': 'NeuroKit2官方方法',
           'biosppy': 'BioSPPy兼容方法', 
@@ -786,7 +786,7 @@
 
     // API 管理
     let currentAPI = 'morphcast'; // 当前使用的API: 'morphcast' 或 'deepface'
-    let deepfaceApiUrl = 'http://localhost:8080'; // DeepFace API 地址 (独立端口)
+    let deepfaceApiUrl = 'http://localhost:5000'; // DeepFace API 地址 (独立端口)
     let apiConnected = false; // API 连接状态
 
     // 生理信号数据存储
